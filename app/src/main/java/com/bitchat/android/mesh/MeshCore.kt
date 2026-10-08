@@ -369,12 +369,8 @@ class MeshCore(
                 return encryptionService.hasEstablishedSession(peerID)
             }
 
-            override fun removeNoiseSession(peerID: String) {
-                try {
-                    encryptionService.removePeer(peerID)
-                } catch (e: Exception) {
-                    Log.w("MeshCore", "Failed to remove Noise session for $peerID: ${e.message}")
-                }
+            override fun refreshNoiseSession(peerID: String) {
+                this@MeshCore.initiateNoiseHandshake(peerID, replaceEstablished = true)
             }
 
             override fun initiateNoiseHandshake(peerID: String) {
@@ -954,10 +950,10 @@ class MeshCore(
         return encryptionService.getSessionState(peerID)
     }
 
-    fun initiateNoiseHandshake(peerID: String) {
+    fun initiateNoiseHandshake(peerID: String, replaceEstablished: Boolean = false) {
         scope.launch {
             try {
-                val handshakeData = encryptionService.initiateHandshake(peerID) ?: return@launch
+                val handshakeData = encryptionService.initiateHandshake(peerID, replaceEstablished) ?: return@launch
                 val packet = BitchatPacket(
                     version = 1u,
                     type = MessageType.NOISE_HANDSHAKE.value,

@@ -425,18 +425,18 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
                 return encryptionService.hasEstablishedSession(peerID)
             }
 
-            override fun removeNoiseSession(peerID: String) {
-                try {
-                    encryptionService.removePeer(peerID)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to remove Noise session for $peerID: ${e.message}")
-                }
+            override fun refreshNoiseSession(peerID: String) {
+                sendNoiseHandshake(peerID, replaceEstablished = true)
             }
             
             override fun initiateNoiseHandshake(peerID: String) {
+                sendNoiseHandshake(peerID, replaceEstablished = false)
+            }
+
+            private fun sendNoiseHandshake(peerID: String, replaceEstablished: Boolean) {
                 try {
                     // Initiate proper Noise handshake with specific peer
-                    val handshakeData = encryptionService.initiateHandshake(peerID)
+                    val handshakeData = encryptionService.initiateHandshake(peerID, replaceEstablished)
 
                     if (handshakeData != null) {
                         val packet = BitchatPacket(

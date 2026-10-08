@@ -28,6 +28,7 @@ import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
@@ -375,7 +376,7 @@ class MessageHandlerTest {
     }
 
     @Test
-    fun `repeated decrypt failures reset stale session and re-handshake`() = runBlocking {
+    fun `repeated decrypt failures start a replacement handshake without tearing down the session`() = runBlocking {
         whenever(delegate.decryptFromPeer(any(), eq(peerID))).thenReturn(null)
         whenever(delegate.hasNoiseSession(peerID)).thenReturn(true)
         val packet = encryptedPacket()
@@ -383,12 +384,25 @@ class MessageHandlerTest {
         repeat(2) {
             assertFalse(handler.handleNoiseEncrypted(RoutedPacket(packet, peerID, "direct-link")))
         }
-        verify(delegate, never()).removeNoiseSession(any())
-        verify(delegate, never()).initiateNoiseHandshake(any())
+        verify(delegate, never()).refreshNoiseSession(any())
 
         assertFalse(handler.handleNoiseEncrypted(RoutedPacket(packet, peerID, "direct-link")))
-        verify(delegate).removeNoiseSession(peerID)
-        verify(delegate).initiateNoiseHandshake(peerID)
+        verify(delegate).refreshNoiseSession(peerID)
+        verify(delegate, never()).initiateNoiseHandshake(any())
+    }
+
+    @Test
+    fun `forged decrypt failures cannot force replacement handshakes faster than the cooldown`() = runBlocking {
+        whenever(delegate.decryptFromPeer(any(), eq(peerID))).thenReturn(null)
+        whenever(delegate.hasNoiseSession(peerID)).thenReturn(true)
+        val packet = encryptedPacket()
+
+        repeat(12) {
+            assertFalse(handler.handleNoiseEncrypted(RoutedPacket(packet, peerID, "direct-link")))
+        }
+
+        verify(delegate, times(1)).refreshNoiseSession(peerID)
+        verify(delegate, never()).initiateNoiseHandshake(any())
     }
 
     @Test
@@ -407,7 +421,7 @@ class MessageHandlerTest {
             handler.handleNoiseEncrypted(RoutedPacket(packet, peerID, "direct-link"))
         }
 
-        verify(delegate, never()).removeNoiseSession(any())
+        verify(delegate, never()).refreshNoiseSession(any())
         verify(delegate, never()).initiateNoiseHandshake(any())
     }
 
@@ -421,7 +435,7 @@ class MessageHandlerTest {
             assertFalse(handler.handleNoiseEncrypted(RoutedPacket(packet, peerID, "direct-link")))
         }
 
-        verify(delegate, never()).removeNoiseSession(any())
+        verify(delegate, never()).refreshNoiseSession(any())
         verify(delegate, never()).initiateNoiseHandshake(any())
     }
 
