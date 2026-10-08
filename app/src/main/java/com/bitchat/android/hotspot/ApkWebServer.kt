@@ -14,6 +14,7 @@ import java.io.FileInputStream
 class ApkWebServer(
     private val context: Context,
     private val apkFile: File,
+    private val apkSha256: String?,
     private val port: Int = DEFAULT_PORT
 ) : NanoHTTPD(port) {
 
@@ -110,8 +111,8 @@ class ApkWebServer(
      */
     private fun generateLandingPageHtml(): String {
         val apkSizeMb = apkFile.length() / 1024 / 1024
-        val apkSha256 = runCatching { AppIntegrity.fileSha256(apkFile) }.getOrDefault("unavailable")
         val officialCode = AppIntegrity.officialCertSha256?.let { AppIntegrity.shortCode(it) } ?: "not configured"
+        val apkCode = apkSha256?.let { AppIntegrity.shortCode(it) } ?: "unavailable"
 
         return """
 <!DOCTYPE html>
@@ -274,11 +275,17 @@ class ApkWebServer(
             </div>
         </div>
 
-        <div class="instructions">
-            <h3>🔐 Verify</h3>
-            <p>Official signing code: <b>${officialCode}</b></p>
-            <p style="word-break:break-all">File SHA-256: <code>${apkSha256}</code></p>
-            <p>After installing, open SafeMesh → Share → Verify. It must say "official SafeMesh" with the same code.</p>
+        <div class="warning">
+            <strong>⚠️ Check the file before you install it</strong>
+            Anyone on this Wi-Fi can change this page and the file, so the codes here prove nothing on their own.
+            Compare them with the codes on the sharer's phone screen, not with this page.
+            <p style="margin-top:10px">Signing code: <b>${officialCode}</b></p>
+            <p style="word-break:break-all">File code: <code>${apkCode}</code></p>
+            <ul style="margin:10px 0 0 18px">
+                <li>If you already have a SafeMesh you trust: open it, go to Share, tap "Check an APK file" and pick the downloaded file. Install only if it says "Real SafeMesh" and its file code matches the sharer's screen.</li>
+                <li>If this is your first SafeMesh: this download cannot be checked. Ask the sharer to send it by Bluetooth / Quick Share instead.</li>
+                <li>Once installed, a fake app can claim to be "official SafeMesh" too. Don't treat that message as proof.</li>
+            </ul>
         </div>
 
         <a href="/safemesh.apk" class="download-button">
@@ -290,6 +297,7 @@ class ApkWebServer(
             <ol>
                 <li>Tap the download button above</li>
                 <li>Wait for the download to complete</li>
+                <li>Check the file as described above</li>
                 <li>Open the downloaded APK file</li>
                 <li>If prompted, enable "Install from unknown sources" for your browser</li>
                 <li>Follow the installation prompts</li>
@@ -297,8 +305,8 @@ class ApkWebServer(
         </div>
 
         <div class="warning">
-            <strong>⚠️ Note:</strong>
-            If you already have SafeMesh installed, you may need to uninstall it first before installing this version. Make sure to backup your data if needed.
+            <strong>⚠️ Already have SafeMesh?</strong>
+            Do not uninstall it to make this file install. A real update installs over your current app. If Android refuses to install it, the file is probably fake: delete it.
         </div>
     </div>
 </body>

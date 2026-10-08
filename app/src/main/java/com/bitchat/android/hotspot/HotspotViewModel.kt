@@ -6,11 +6,14 @@ import android.os.Looper
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.bitchat.android.util.AppIntegrity
 import com.bitchat.android.wifiaware.WifiAwareController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -82,7 +85,10 @@ class HotspotViewModel(application: Application) : AndroidViewModel(application)
 
                             // Start web server
                             try {
-                                val server = ApkWebServer(context, apkFile)
+                                val apkSha256 = withContext(Dispatchers.IO) {
+                                    runCatching { AppIntegrity.fileSha256(apkFile) }.getOrNull()
+                                }
+                                val server = ApkWebServer(context, apkFile, apkSha256)
                                 server.startServer()
                                 webServer = server
 
@@ -94,7 +100,8 @@ class HotspotViewModel(application: Application) : AndroidViewModel(application)
                                     password = info.password,
                                     ipAddress = info.ipAddress,
                                     port = ApkWebServer.DEFAULT_PORT,
-                                    connectedPeers = info.connectedPeers
+                                    connectedPeers = info.connectedPeers,
+                                    apkSha256 = apkSha256
                                 )
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to start web server", e)
@@ -248,7 +255,8 @@ class HotspotViewModel(application: Application) : AndroidViewModel(application)
             val password: String,
             val ipAddress: String,
             val port: Int,
-            val connectedPeers: Int
+            val connectedPeers: Int,
+            val apkSha256: String? = null
         ) : HotspotState()
         data class Error(val message: String) : HotspotState()
     }

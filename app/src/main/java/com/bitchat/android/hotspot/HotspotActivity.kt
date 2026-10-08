@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,6 +39,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bitchat.android.R
 import com.bitchat.android.ui.theme.BitchatFontFamily
 import com.bitchat.android.ui.theme.BitchatTheme
+import com.bitchat.android.util.AppIntegrity
 import com.bitchat.android.util.UniversalApkManager
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
@@ -436,7 +438,8 @@ fun ActiveHotspotScreen(state: HotspotViewModel.HotspotState.Active) {
             )
             1 -> WebsiteTabContent(
                 ipAddress = state.ipAddress,
-                port = state.port
+                port = state.port,
+                apkSha256 = state.apkSha256
             )
         }
     }
@@ -517,7 +520,7 @@ fun WifiTabContent(ssid: String, password: String) {
 }
 
 @Composable
-fun WebsiteTabContent(ipAddress: String, port: Int) {
+fun WebsiteTabContent(ipAddress: String, port: Int, apkSha256: String?) {
     val url = "http://$ipAddress:$port"
     val clipboardManager = LocalClipboardManager.current
 
@@ -599,7 +602,48 @@ fun WebsiteTabContent(ipAddress: String, port: Int) {
                             "2. Open a web browser on your device\n" +
                             "3. Visit the URL above or scan the QR code\n" +
                             "4. Tap 'Download SafeMesh'\n" +
-                            "5. Install the downloaded APK",
+                            "5. Check the file (below) before installing it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "🔐 Verify the download",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Signing code: " +
+                            (AppIntegrity.officialCertSha256?.let { AppIntegrity.shortCode(it) } ?: "not configured"),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = "File code: " + (apkSha256?.let { AppIntegrity.shortCode(it) } ?: "unavailable"),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = "Anyone on this Wi-Fi can change the web page and the file. Have them compare " +
+                            "these codes with this screen, not the web page.\n" +
+                            "• Already have a SafeMesh they trust: Share → Check an APK file on the " +
+                            "download. It must say Real SafeMesh with this file code.\n" +
+                            "• First install: the download can't be checked. Send it by Bluetooth / " +
+                            "Quick Share instead.\n" +
+                            "• If installing over an existing SafeMesh fails, the file may be fake. " +
+                            "Don't uninstall to force it.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
