@@ -90,16 +90,11 @@ class WearMeshService private constructor(private val context: Context) {
                         )
                         if (observed) {
                             meshCore.setDirectConnection(obs.peerID, true)
+                            maybeAutoHandshake(obs.peerID)
                             try {
                                 meshCore.gossipSyncManager.scheduleInitialSyncToPeer(obs.peerID, 1_000)
                             } catch (_: Exception) { }
                         }
-                    }
-                    routed.peerID?.let { pid ->
-                        maybeAutoHandshake(pid)
-                        try {
-                            meshCore.gossipSyncManager.scheduleInitialSyncToPeer(pid, 1_000)
-                        } catch (_: Exception) { }
                     }
                 },
                 announcementNicknameProvider = { nickname },
@@ -187,6 +182,7 @@ class WearMeshService private constructor(private val context: Context) {
                             if (!linkBack) {
                                 Log.i(TAG, "Peer $peerID did not return after disconnect; removing")
                                 meshCore.removePeer(peerID)
+                                handshakeLimiter.forget(peerID)
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Disconnect grace check failed for $peerID: ${e.message}")
@@ -204,19 +200,16 @@ class WearMeshService private constructor(private val context: Context) {
     }
 
     /**
-     * Proactively establish a Noise session with peers we have no session for (throttled to
-     * one attempt per peer per 60 s). Peers may hold a stale session after we restart — the
+     * Proactively establish a Noise session with direct-link peers we have no session for,
+     * bounded by [AutoHandshakeLimiter]. Peers may hold a stale session after we restart — the
      * protocol has no decrypt-failure kick path, so our fresh handshake replaces it and
      * restores encrypted DM/file delivery.
      */
-    private val handshakeAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val handshakeLimiter = AutoHandshakeLimiter()
 
     private fun maybeAutoHandshake(peerID: String) {
         if (peerID == myPeerID || hasEstablishedSession(peerID)) return
-        val now = System.currentTimeMillis()
-        val last = handshakeAttempts[peerID] ?: 0L
-        if (now - last < 60_000) return
-        handshakeAttempts[peerID] = now
+        if (!handshakeLimiter.tryAcquire(peerID, System.currentTimeMillis())) return
         serviceScope.launch {
             delay(1_500)
             if (!hasEstablishedSession(peerID)) {
@@ -284,6 +277,7 @@ class WearMeshService private constructor(private val context: Context) {
         isActive = false
         meshCore.stopCore()
         connectionManager.stopServices()
+        handshakeLimiter.clear()
         Log.i(TAG, "Mesh services stopped")
     }
 
