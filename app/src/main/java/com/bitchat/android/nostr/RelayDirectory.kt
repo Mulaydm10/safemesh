@@ -114,11 +114,32 @@ object RelayDirectory {
         return R * c
     }
 
-    private fun normalizeRelayUrl(raw: String): String {
+    /**
+     * Returns the wss:// URL for a relay CSV entry, or null unless it is a bare public
+     * hostname (optional port) or already wss://. Rejects plaintext schemes, IP literals
+     * and local names so a poisoned list cannot downgrade or redirect clients.
+     */
+    internal fun normalizeRelayUrl(raw: String): String? {
         val trimmed = raw.trim()
-        if (trimmed.isEmpty()) return trimmed
-        return if ("://" in trimmed) trimmed else "wss://$trimmed"
+        val authority = when {
+            trimmed.startsWith("wss://", ignoreCase = true) -> trimmed.substring("wss://".length)
+            "://" in trimmed -> return null
+            else -> trimmed
+        }
+        val match = RELAY_AUTHORITY.matchEntire(authority) ?: return null
+        val host = match.groupValues[1].lowercase()
+        val port = match.groupValues[2]
+        if (port.isNotEmpty() && port.toInt() !in 1..65535) return null
+        val labels = host.split('.')
+        if (labels.size < 2 || labels.last().all { it.isDigit() }) return null
+        if (host == "localhost" || BLOCKED_HOST_SUFFIXES.any { host.endsWith(it) }) return null
+        return if (port.isEmpty()) "wss://$host" else "wss://$host:$port"
     }
+
+    private val RELAY_AUTHORITY =
+        Regex("^((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9-]{1,63})(?::([0-9]{1,5}))?$")
+    private val BLOCKED_HOST_SUFFIXES =
+        listOf(".local", ".localhost", ".internal", ".lan", ".home", ".corp", ".intranet", ".arpa")
 
     // ===== Implementation details =====
 
@@ -267,10 +288,10 @@ object RelayDirectory {
                 if (trimmed.lowercase().startsWith("relay url")) continue
                 val parts = trimmed.split(",")
                 if (parts.size < 3) continue
-                val url = normalizeRelayUrl(parts[0].trim())
+                val url = normalizeRelayUrl(parts[0]) ?: continue
                 val lat = parts[1].trim().toDoubleOrNull()
                 val lon = parts[2].trim().toDoubleOrNull()
-                if (url.isEmpty() || lat == null || lon == null) continue
+                if (lat == null || lon == null || lat !in -90.0..90.0 || lon !in -180.0..180.0) continue
                 result.add(RelayInfo(url = url, latitude = lat, longitude = lon))
             }
         }

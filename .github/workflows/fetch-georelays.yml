@@ -6,35 +6,80 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: fetch-georelays
+  cancel-in-progress: false
+
+env:
+  GEORELAYS_REPOSITORY: permissionlesstech/georelays
+  RELAY_ASSET: app/src/main/assets/nostr_relays.csv
+  RELAY_LOCK: tools/georelays/georelays.lock
 
 jobs:
-  update-relay-data:
+  propose-relay-update:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Fetch GeoRelays
-        run: |
-          wget https://raw.githubusercontent.com/permissionlesstech/georelays/refs/heads/main/nostr_relays.csv
-          mv nostr_relays.csv ./app/src/main/assets/nostr_relays.csv
 
-      - name: Check for changes
-        id: git-check
+      - name: Resolve upstream commit
+        id: upstream
         run: |
-          git diff --exit-code || echo "changes=true" >> $GITHUB_OUTPUT
-    
-      - name: Commit and push changes
-        if: steps.git-check.outputs.changes == 'true'
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add app/src/main/assets/nostr_relays.csv
-          git commit -m "Automated update of relay data - $(date -u)"
-          git push
+          commit="$(git ls-remote "https://github.com/${GEORELAYS_REPOSITORY}.git" refs/heads/main | cut -f1)"
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve ${GEORELAYS_REPOSITORY} main to a commit SHA"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Download relay list at the pinned commit
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --max-filesize 1048576 \
+            --output "$RUNNER_TEMP/nostr_relays.csv" \
+            "https://raw.githubusercontent.com/${GEORELAYS_REPOSITORY}/${COMMIT}/nostr_relays.csv"
+
+      - name: Validate downloaded relay list
+        run: python3 -m tools.georelays.validate_relays "$RUNNER_TEMP/nostr_relays.csv"
+
+      - name: Install relay list and update lock
+        id: install
+        env:
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+        run: |
+          cp "$RUNNER_TEMP/nostr_relays.csv" "$RELAY_ASSET"
+          sha256="$(sha256sum "$RELAY_ASSET" | cut -d' ' -f1)"
+          {
+            echo "# Provenance of ${RELAY_ASSET}. Change it only through the"
+            echo "# reviewed PR opened by .github/workflows/fetch-georelays.yml."
+            echo "repository=${GEORELAYS_REPOSITORY}"
+            echo "commit=${COMMIT}"
+            echo "sha256=${sha256}"
+          } > "$RELAY_LOCK"
+          python3 -m tools.georelays.validate_relays "$RELAY_ASSET" --lock "$RELAY_LOCK"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Open pull request for review
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: automation/georelays-update
+          delete-branch: true
+          add-paths: |
+            ${{ env.RELAY_ASSET }}
+            ${{ env.RELAY_LOCK }}
+          commit-message: "Update relay data to ${{ env.GEORELAYS_REPOSITORY }}@${{ steps.upstream.outputs.commit }}"
+          title: "Update bundled relay directory"
+          body: |
+            Automated relay list update for review. Do not merge without checking the diff.
+
+            - Source: https://github.com/${{ env.GEORELAYS_REPOSITORY }}/blob/${{ steps.upstream.outputs.commit }}/nostr_relays.csv
+            - SHA-256: `${{ steps.install.outputs.sha256 }}`
+            - Passed `tools/georelays/validate_relays.py` (wss-only public hostnames, valid coordinates).
