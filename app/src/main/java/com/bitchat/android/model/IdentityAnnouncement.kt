@@ -26,9 +26,9 @@ data class IdentityAnnouncement(
         CAPABILITIES(0x05u);
         
         companion object {
-            fun fromValue(value: UByte): TLVType? {
-                return values().find { it.value == value }
-            }
+            private val byValue = entries.associateBy { it.value }
+
+            fun fromValue(value: UByte): TLVType? = byValue[value]
         }
     }
 
@@ -40,7 +40,8 @@ data class IdentityAnnouncement(
         
         // Check size limits
         if (nicknameData.size > 255 || noisePublicKey.size > 255 || signingPublicKey.size > 255 ||
-            unknownTLVs.any { it.value.size > 255 }) {
+            unknownTLVs.any { it.value.size > 255 } || unknownTLVs.size > MAX_UNKNOWN_TLVS ||
+            unknownTLVs.sumOf { it.value.size } > MAX_UNKNOWN_TLV_BYTES) {
             return null
         }
         
@@ -76,14 +77,26 @@ data class IdentityAnnouncement(
             result.addAll(tlv.value.toList())
         }
         
+        if (result.size > MAX_ENCODED_SIZE) return null
         return result.toByteArray()
     }
     
     companion object {
         /**
+         * Decode runs on unauthenticated announces, before the signature check.
+         * A legitimate announce is well under 1 KB, so bound the work and the
+         * retained unknown extensions instead of trusting the sender.
+         */
+        const val MAX_ENCODED_SIZE = 2048
+        const val MAX_UNKNOWN_TLVS = 8
+        const val MAX_UNKNOWN_TLV_BYTES = 1024
+
+        /**
          * Decode from TLV binary data matching iOS implementation
          */
         fun decode(data: ByteArray): IdentityAnnouncement? {
+            if (data.size > MAX_ENCODED_SIZE) return null
+
             // Create defensive copy
             val dataCopy = data.copyOf()
             
@@ -93,6 +106,7 @@ data class IdentityAnnouncement(
             var signingPublicKey: ByteArray? = null
             var capabilities: PeerCapabilities? = null
             val unknownTLVs = mutableListOf<UnknownAnnouncementTLV>()
+            var unknownTLVBytes = 0
             
             while (offset + 2 <= dataCopy.size) {
                 // Read TLV type
@@ -128,6 +142,10 @@ data class IdentityAnnouncement(
                     null -> {
                         // Retain unknown extensions so callers can forward or
                         // re-encode the announcement without erasing them.
+                        unknownTLVBytes += value.size
+                        if (unknownTLVs.size >= MAX_UNKNOWN_TLVS || unknownTLVBytes > MAX_UNKNOWN_TLV_BYTES) {
+                            return null
+                        }
                         unknownTLVs += UnknownAnnouncementTLV(typeValue.toInt(), value)
                     }
                 }
