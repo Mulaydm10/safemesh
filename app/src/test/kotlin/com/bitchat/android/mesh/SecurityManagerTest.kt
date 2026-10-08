@@ -657,6 +657,31 @@ class SecurityManagerTest {
         assertTrue(securityManager.validatePacket(first, unknownPeerID))
     }
 
+    @Test
+    fun `unsigned packet flood cannot evict authenticated duplicate entries`() {
+        setupKnownPeer(otherPeerID, otherSigningKey)
+        val signed = BitchatPacket(
+            type = MessageType.MESSAGE.value,
+            ttl = 10u,
+            senderID = otherPeerID,
+            payload = dummyPayload
+        )
+        signed.signature = validSignature
+        assertTrue(securityManager.validatePacket(signed, otherPeerID))
+
+        val (unsigned, _) = prefixSharingPair()
+        val cap = com.bitchat.android.util.AppConstants.Security.MAX_PROCESSED_MESSAGES
+        repeat(cap + 1) { i ->
+            val flood = unsigned.copy(payload = byteArrayOf(i.toByte(), (i shr 8).toByte(), (i shr 16).toByte()))
+            assertTrue(securityManager.validatePacket(flood, otherPeerID))
+        }
+
+        assertFalse(
+            "Authenticated replay must still be caught after an unsigned flood",
+            securityManager.validatePacket(signed, otherPeerID)
+        )
+    }
+
     private fun String.hexToByteArrayForTest(): ByteArray =
         chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 }
