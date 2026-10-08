@@ -11,6 +11,11 @@ object Geohash {
     private val base32Chars = "0123456789bcdefghjkmnpqrstuvwxyz".toCharArray()
     private val charToValue: Map<Char, Int> = base32Chars.withIndex().associate { it.value to it.index }
 
+    /** True for a lowercase base32 geohash whose length is a [GeohashChannelLevel] precision. */
+    fun isValidChannelGeohash(geohash: String): Boolean =
+        GeohashChannelLevel.entries.any { it.precision == geohash.length } &&
+            geohash.all { it in charToValue }
+
     data class Bounds(val latMin: Double, val latMax: Double, val lonMin: Double, val lonMax: Double)
 
     /**

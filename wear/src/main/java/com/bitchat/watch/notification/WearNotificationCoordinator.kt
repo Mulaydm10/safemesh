@@ -14,7 +14,6 @@ import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.ui.NotificationTextUtils
-import com.bitchat.watch.MainActivity
 import com.bitchat.watch.R
 import com.bitchat.watch.ui.WearChatState
 import java.util.concurrent.ConcurrentHashMap
@@ -110,8 +109,7 @@ class WearNotificationCoordinator private constructor(context: Context) {
         val contentIntent = PendingIntent.getActivity(
             appContext,
             conversationNotificationId(peerID),
-            Intent(appContext, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            WearNotificationLaunchGuard.notificationIntent(appContext).apply {
                 putExtra(EXTRA_OPEN_DM, true)
                 putExtra(EXTRA_PEER_ID, peerID)
             },

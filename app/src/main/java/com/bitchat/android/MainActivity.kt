@@ -106,7 +106,9 @@ class MainActivity : OrientationAwareActivity() {
         }
         
         // Check if this is a quit request from the notification
-        if (intent.getBooleanExtra("ACTION_QUIT_APP", false)) {
+        if (com.bitchat.android.ui.NotificationLaunchGuard.isTrusted(intent) &&
+            intent.getBooleanExtra("ACTION_QUIT_APP", false)
+        ) {
             android.util.Log.d("MainActivity", "Quit request received in onCreate, finishing activity")
             finish()
             return
@@ -722,7 +724,9 @@ class MainActivity : OrientationAwareActivity() {
         setIntent(intent)
         
         // Check if this is a quit request from the notification
-        if (intent.getBooleanExtra("ACTION_QUIT_APP", false)) {
+        if (com.bitchat.android.ui.NotificationLaunchGuard.isTrusted(intent) &&
+            intent.getBooleanExtra("ACTION_QUIT_APP", false)
+        ) {
             android.util.Log.d("MainActivity", "Quit request received, finishing activity")
             finish()
             return
@@ -792,6 +796,8 @@ class MainActivity : OrientationAwareActivity() {
      * Handle intents from notification clicks - open specific private chat or geohash chat
      */
     private fun handleNotificationIntent(intent: Intent) {
+        if (!com.bitchat.android.ui.NotificationLaunchGuard.isTrusted(intent)) return
+
         val shouldOpenPrivateChat = intent.getBooleanExtra(
             com.bitchat.android.ui.NotificationManager.EXTRA_OPEN_PRIVATE_CHAT, 
             false
@@ -821,6 +827,7 @@ class MainActivity : OrientationAwareActivity() {
             
             shouldOpenGeohashChat -> {
                 val geohash = intent.getStringExtra(com.bitchat.android.ui.NotificationManager.EXTRA_GEOHASH)
+                    ?.takeIf(com.bitchat.android.geohash.Geohash::isValidChannelGeohash)
                 
                 if (geohash != null) {
                     Log.d("MainActivity", "Opening geohash chat from notification")
