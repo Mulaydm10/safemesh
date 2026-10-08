@@ -26,6 +26,7 @@ import java.security.MessageDigest
 import java.util.Date
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Process-wide, serialized persistence for private conversations.
@@ -69,6 +70,15 @@ class ConversationRepository internal constructor(
     )
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val initialized = AtomicBoolean(false)
+
+    // Bumped by [clearAllAndWait] before the wipe is queued. Every write carries the epoch it was
+    // issued under and is dropped on the writer thread if a wipe happened since, so a write that
+    // was decided before panic can never re-create rows (or a fresh key) after the wipe.
+    private val wipeEpoch = AtomicLong(0L)
+
+    fun currentWipeEpoch(): Long = wipeEpoch.get()
+
+    private fun isCurrentEpoch(epoch: Long): Boolean = epoch == wipeEpoch.get()
     private val _storeState =
         MutableStateFlow<ConversationStoreState>(ConversationStoreState.Loading)
     val storeState: StateFlow<ConversationStoreState> = _storeState.asStateFlow()
@@ -134,10 +144,11 @@ class ConversationRepository internal constructor(
         aliases: Set<String>,
         displayName: String?,
         message: BitchatMessage,
-        isRead: Boolean
+        isRead: Boolean,
+        epoch: Long = currentWipeEpoch()
     ) {
         scope.launch {
-            upsertMessageLocked(conversationID, aliases, displayName, message, isRead)
+            upsertMessageLocked(conversationID, aliases, displayName, message, isRead, epoch)
         }
     }
 
@@ -146,9 +157,10 @@ class ConversationRepository internal constructor(
         aliases: Set<String>,
         displayName: String?,
         message: BitchatMessage,
-        isRead: Boolean
+        isRead: Boolean,
+        epoch: Long = currentWipeEpoch()
     ): Boolean = withContext(dispatcher) {
-        upsertMessageLocked(conversationID, aliases, displayName, message, isRead)
+        upsertMessageLocked(conversationID, aliases, displayName, message, isRead, epoch)
     }
 
     private fun upsertMessageLocked(
@@ -156,8 +168,9 @@ class ConversationRepository internal constructor(
         aliases: Set<String>,
         displayName: String?,
         message: BitchatMessage,
-        isRead: Boolean
-    ): Boolean = try {
+        isRead: Boolean,
+        epoch: Long
+    ): Boolean = if (!isCurrentEpoch(epoch)) false else try {
         val result = database.upsertMessage(
             conversationID = conversationID,
             aliases = aliases,
@@ -176,8 +189,13 @@ class ConversationRepository internal constructor(
         false
     }
 
-    fun updateDeliveryStatus(messageID: String, status: DeliveryStatus) {
+    fun updateDeliveryStatus(
+        messageID: String,
+        status: DeliveryStatus,
+        epoch: Long = currentWipeEpoch()
+    ) {
         scope.launch {
+            if (!isCurrentEpoch(epoch)) return@launch
             try {
                 database.updateDeliveryStatus(messageID, status)
             } catch (error: Exception) {
@@ -186,8 +204,9 @@ class ConversationRepository internal constructor(
         }
     }
 
-    fun markRead(messageID: String) {
+    fun markRead(messageID: String, epoch: Long = currentWipeEpoch()) {
         scope.launch {
+            if (!isCurrentEpoch(epoch)) return@launch
             try {
                 database.markRead(messageID)
             } catch (error: Exception) {
@@ -198,8 +217,10 @@ class ConversationRepository internal constructor(
 
     internal suspend fun setConversationReadAndWait(
         conversationID: String,
-        isRead: Boolean
+        isRead: Boolean,
+        epoch: Long = currentWipeEpoch()
     ): ConversationReadResult = withContext(dispatcher) {
+        if (!isCurrentEpoch(epoch)) return@withContext ConversationReadResult(success = false)
         try {
             ConversationReadResult(
                 success = true,
@@ -214,8 +235,13 @@ class ConversationRepository internal constructor(
         }
     }
 
-    fun mergeAliases(targetConversationID: String, aliases: Set<String>) {
+    fun mergeAliases(
+        targetConversationID: String,
+        aliases: Set<String>,
+        epoch: Long = currentWipeEpoch()
+    ) {
         scope.launch {
+            if (!isCurrentEpoch(epoch)) return@launch
             try {
                 database.mergeAliases(targetConversationID, aliases)
             } catch (error: Exception) {
@@ -227,9 +253,11 @@ class ConversationRepository internal constructor(
     fun updateConversationIdentity(
         conversationID: String,
         aliases: Set<String>,
-        displayName: String
+        displayName: String,
+        epoch: Long = currentWipeEpoch()
     ) {
         scope.launch {
+            if (!isCurrentEpoch(epoch)) return@launch
             try {
                 database.updateConversationIdentity(conversationID, aliases, displayName)
             } catch (error: Exception) {
@@ -256,8 +284,10 @@ class ConversationRepository internal constructor(
         aliases: Set<String>,
         displayName: String?,
         messages: List<BitchatMessage>,
-        readMessageIDs: Set<String>
+        readMessageIDs: Set<String>,
+        epoch: Long = currentWipeEpoch()
     ): Boolean = withContext(dispatcher) {
+        if (!isCurrentEpoch(epoch)) return@withContext false
         try {
             deleteStoredMedia(
                 database.restoreConversation(
@@ -294,8 +324,9 @@ class ConversationRepository internal constructor(
         false
     }
 
-    fun deleteMessage(messageID: String) {
+    fun deleteMessage(messageID: String, epoch: Long = currentWipeEpoch()) {
         scope.launch {
+            if (!isCurrentEpoch(epoch)) return@launch
             try {
                 deleteStoredMedia(database.deleteMessage(messageID))
             } catch (error: Exception) {
@@ -310,8 +341,13 @@ class ConversationRepository internal constructor(
      * Panic mode uses this stronger variant so identity regeneration and transport restart cannot
      * race an outstanding message insert or an unfinished conversation deletion.
      */
-    suspend fun clearAllAndWait(): Boolean = withContext(dispatcher) {
-        try {
+    suspend fun clearAllAndWait(): Boolean {
+        wipeEpoch.incrementAndGet()
+        return withContext(dispatcher) { clearAllLocked() }
+    }
+
+    private fun clearAllLocked(): Boolean {
+        return try {
             database.clearAll()
             _storeState.value = ConversationStoreState.Ready
             true
