@@ -82,7 +82,7 @@ class HotspotViewModel(application: Application) : AndroidViewModel(application)
 
                             // Start web server
                             try {
-                                val server = ApkWebServer(context, apkFile)
+                                val server = ApkWebServer(context, apkFile, info.ipAddress)
                                 server.startServer()
                                 webServer = server
 

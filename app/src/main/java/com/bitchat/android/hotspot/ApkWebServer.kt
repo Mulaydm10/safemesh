@@ -6,20 +6,88 @@ import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.io.FileInputStream
+import java.net.InetAddress
+import java.net.NetworkInterface
 
 /**
  * Lightweight HTTP server for serving the universal APK over Wi-Fi P2P hotspot.
  * Based on NanoHTTPD.
+ *
+ * Listens only on the P2P group owner address and answers only clients inside the
+ * group subnet, so the landing page is not reachable over any other network the
+ * device is on (infrastructure Wi-Fi, mobile data IPv6).
  */
 class ApkWebServer(
     private val context: Context,
     private val apkFile: File,
+    private val groupOwnerAddress: String,
     private val port: Int = DEFAULT_PORT
-) : NanoHTTPD(port) {
+) : NanoHTTPD(requireIpv4Literal(groupOwnerAddress), port) {
 
     companion object {
         private const val TAG = "ApkWebServer"
         const val DEFAULT_PORT = 9999
+        internal const val DEFAULT_PREFIX_LENGTH = 24
+        internal const val MAX_CONCURRENT_CONNECTIONS = 8
+
+        internal fun requireIpv4Literal(address: String): String {
+            val octets = address.split('.')
+            require(
+                octets.size == 4 &&
+                    octets.all { it.toIntOrNull() in 0..255 } &&
+                    octets[0].toInt() != 0
+            ) {
+                "Hotspot address must be a concrete IPv4 literal"
+            }
+            return address
+        }
+
+        internal fun isInSubnet(remote: InetAddress, local: InetAddress, prefixLength: Int): Boolean {
+            val r = remote.address
+            val l = local.address
+            if (r.size != l.size || prefixLength !in 0..(l.size * 8)) return false
+            val fullBytes = prefixLength / 8
+            for (i in 0 until fullBytes) {
+                if (r[i] != l[i]) return false
+            }
+            val remainingBits = prefixLength % 8
+            if (remainingBits == 0) return true
+            val mask = (0xFF shl (8 - remainingBits)) and 0xFF
+            return (r[fullBytes].toInt() and mask) == (l[fullBytes].toInt() and mask)
+        }
+    }
+
+    private val localAddress: InetAddress = InetAddress.getByName(groupOwnerAddress)
+
+    private val groupPrefixLength: Int by lazy {
+        runCatching {
+            NetworkInterface.getByInetAddress(localAddress)
+                ?.interfaceAddresses
+                ?.firstOrNull { it.address == localAddress }
+                ?.networkPrefixLength
+                ?.toInt()
+        }.getOrNull() ?: DEFAULT_PREFIX_LENGTH
+    }
+
+    init {
+        setAsyncRunner(BoundedAsyncRunner(MAX_CONCURRENT_CONNECTIONS))
+    }
+
+    /** Caps simultaneous connections so a client cannot spawn unbounded threads. */
+    private class BoundedAsyncRunner(private val maxConnections: Int) : NanoHTTPD.DefaultAsyncRunner() {
+        override fun exec(clientHandler: NanoHTTPD.ClientHandler) {
+            if (running.size >= maxConnections) {
+                clientHandler.close()
+                return
+            }
+            super.exec(clientHandler)
+        }
+    }
+
+    private fun isGroupClient(remoteIp: String?): Boolean {
+        if (remoteIp.isNullOrEmpty()) return false
+        val remote = runCatching { InetAddress.getByName(remoteIp) }.getOrNull() ?: return false
+        return isInSubnet(remote, localAddress, groupPrefixLength)
     }
 
     private val appVersion: String by lazy {
@@ -41,7 +109,11 @@ class ApkWebServer(
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
 
-        Log.d(TAG, "Request: ${session.method} $uri from ${session.remoteIpAddress}")
+        Log.d(TAG, "Request: ${session.method} $uri")
+
+        if (!isGroupClient(session.remoteIpAddress)) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden")
+        }
 
         return when {
             uri == "/safemesh.apk" -> {
@@ -312,7 +384,7 @@ class ApkWebServer(
     fun startServer() {
         try {
             start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-            Log.d(TAG, "Web server started on port $port")
+            Log.d(TAG, "Web server started on the hotspot interface, port $port")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start web server", e)
             throw e
