@@ -355,7 +355,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 .updateFromAnnouncement(peerID, nickname, neighborsOrNull, packet.timestamp)
         } catch (_: Exception) { }
 
-        Log.d(TAG, "Verified announce from $peerID (${announcement.nickname})")
+        Log.d(TAG, "Verified announce")
         return AnnounceHandlingResult.Accepted(isFirstAnnounce)
     }
     
@@ -410,7 +410,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
         if (peerID == myPeerID) return
         val senderNickname = delegate?.getPeerNickname(peerID)
         if (senderNickname != null) {
-            Log.d(TAG, "Received message from $senderNickname")
+            Log.d(TAG, "Received message from known peer")
             delegate?.updatePeerNickname(peerID, senderNickname)
         }
         
@@ -542,7 +542,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     isPrivate = true,
                     recipientNickname = delegate?.getMyNickname()
                 )
-                Log.d(TAG, "📄 Saved incoming file to $savedPath")
+                Log.d(TAG, "📄 Saved incoming file")
                 if (!LiveVoiceManager.getInstance(appContext).absorbFinalizedVoiceNote(message)) {
                     delegate?.onMessageReceived(message)
                 }

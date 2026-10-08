@@ -46,7 +46,7 @@ data class BitchatFilePacket(
 
     fun encode(): ByteArray? {
         try {
-            android.util.Log.d("BitchatFilePacket", "🔄 Encoding: name=$fileName, size=$fileSize, mime=$mimeType")
+            android.util.Log.d("BitchatFilePacket", "🔄 Encoding: size=$fileSize")
         val nameBytes = fileName.toByteArray(Charsets.UTF_8)
         val mimeBytes = mimeType.toByteArray(Charsets.UTF_8)
         // Validate bounds for 2-byte TLV lengths (per-TLV). CONTENT may exceed 65535 and will be chunked.
@@ -166,7 +166,7 @@ data class BitchatFilePacket(
                 val s = size ?: c.size.toLong()
                 val m = mime ?: "application/octet-stream"
                 val result = BitchatFilePacket(n, s, m, c)
-                android.util.Log.d("BitchatFilePacket", "✅ Decoded: name=$n, size=$s, mime=$m, content=${c.size} bytes")
+                android.util.Log.d("BitchatFilePacket", "✅ Decoded: size=$s, content=${c.size} bytes")
                 return result
             } catch (e: Exception) {
                 android.util.Log.e("BitchatFilePacket", "❌ Decoding failed: ${e.message}", e)

@@ -11,3 +11,11 @@
 # Tink references JSR-305 annotations not present on Android.
 -dontwarn javax.annotation.Nullable
 -dontwarn javax.annotation.concurrent.GuardedBy
+
+# Strip debug/verbose/info logging from release builds so nicknames, peer IDs,
+# fingerprints and file names never reach logcat or bug reports.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
