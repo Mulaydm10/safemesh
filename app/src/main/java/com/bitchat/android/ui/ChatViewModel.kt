@@ -1345,6 +1345,29 @@ class ChatViewModel(
         return verificationHandler.beginQRVerification(qr)
     }
 
+    val pendingDeepLinkVerification: StateFlow<VerificationService.VerificationQR?> = state.pendingDeepLinkVerification
+
+    /** A bitchat://verify link can come from any app or web page, so it waits for user confirmation. */
+    fun requestDeepLinkVerification(qr: VerificationService.VerificationQR) {
+        state.setPendingDeepLinkVerification(qr)
+        showVerificationSheet()
+    }
+
+    fun confirmDeepLinkVerification(): Boolean {
+        val qr = state.pendingDeepLinkVerification.value ?: return false
+        state.setPendingDeepLinkVerification(null)
+        if (!VerificationService.isFresh(qr.ts)) return false
+        return verificationHandler.beginQRVerification(qr)
+    }
+
+    fun cancelDeepLinkVerification() {
+        state.setPendingDeepLinkVerification(null)
+    }
+
+    fun fingerprintForNoiseHex(noiseKeyHex: String): String? {
+        return verificationHandler.fingerprintFromNoiseHex(noiseKeyHex)
+    }
+
     // MARK: - Debug and Troubleshooting
     
     fun getDebugStatus(): String {
@@ -1382,6 +1405,7 @@ class ChatViewModel(
 
     fun hideVerificationSheet() {
         state.setShowVerificationSheet(false)
+        state.setPendingDeepLinkVerification(null)
         if (reopenSidebarAfterVerification) {
             reopenSidebarAfterVerification = false
             state.setShowMeshPeerList(true)

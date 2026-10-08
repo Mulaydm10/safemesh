@@ -145,13 +145,22 @@ object VerificationService {
     ): VerificationQR? {
         val service = encryptionServiceRef?.get() ?: return null
         val qr = VerificationQR.fromUrlString(urlString) ?: return null
-        val now = System.currentTimeMillis() / 1000L
-        if (now - qr.ts > maxAgeSeconds) return null
+        if (!isFresh(qr.ts, maxAgeSeconds)) return null
 
         val sig = qr.sigHex.dataFromHexString() ?: return null
         val signKey = qr.signKeyHex.dataFromHexString() ?: return null
         val ok = service.verifyEd25519Signature(sig, qr.canonicalBytes(), signKey)
         return if (ok) qr else null
+    }
+
+    fun isFresh(
+        tsSeconds: Long,
+        maxAgeSeconds: Long = AppConstants.Verification.QR_MAX_AGE_SECONDS
+    ): Boolean {
+        val now = System.currentTimeMillis() / 1000L
+        if (now - tsSeconds > maxAgeSeconds) return false
+        if (tsSeconds - now > AppConstants.Verification.QR_MAX_FUTURE_SKEW_SECONDS) return false
+        return true
     }
 
     fun buildVerifyChallenge(noiseKeyHex: String, nonceA: ByteArray): ByteArray {

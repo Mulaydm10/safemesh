@@ -2,6 +2,7 @@ package com.bitchat.android.ui
 
 import android.util.Log
 import com.bitchat.android.model.BitchatMessage
+import com.bitchat.android.services.VerificationService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -131,6 +132,9 @@ class ChatState(
 
     private val _showVerificationSheet = MutableStateFlow(false)
     val showVerificationSheet: StateFlow<Boolean> = _showVerificationSheet.asStateFlow()
+
+    private val _pendingDeepLinkVerification = MutableStateFlow<VerificationService.VerificationQR?>(null)
+    val pendingDeepLinkVerification: StateFlow<VerificationService.VerificationQR?> = _pendingDeepLinkVerification.asStateFlow()
 
     private val _showSecurityVerificationSheet = MutableStateFlow(false)
     val showSecurityVerificationSheet: StateFlow<Boolean> = _showSecurityVerificationSheet.asStateFlow()
@@ -323,6 +327,10 @@ class ChatState(
 
     fun setShowVerificationSheet(show: Boolean) {
         _showVerificationSheet.value = show
+    }
+
+    fun setPendingDeepLinkVerification(qr: VerificationService.VerificationQR?) {
+        _pendingDeepLinkVerification.value = qr
     }
 
     fun setShowSecurityVerificationSheet(show: Boolean) {

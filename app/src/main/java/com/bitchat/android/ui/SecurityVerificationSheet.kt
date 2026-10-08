@@ -432,7 +432,7 @@ private fun FingerprintBlock(
     }
 }
 
-private fun formatFingerprint(fingerprint: String): String {
+internal fun formatFingerprint(fingerprint: String): String {
     val upper = fingerprint.uppercase()
     val sb = StringBuilder()
     upper.forEachIndexed { index, c ->

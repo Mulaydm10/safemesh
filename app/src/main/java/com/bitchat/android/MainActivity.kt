@@ -855,7 +855,7 @@ class MainActivity : OrientationAwareActivity() {
         chatViewModel.showVerificationSheet()
         val qr = VerificationService.verifyScannedQR(uri.toString())
         if (qr != null) {
-            chatViewModel.beginQRVerification(qr)
+            chatViewModel.requestDeepLinkVerification(qr)
         }
     }
 

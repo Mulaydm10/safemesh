@@ -63,6 +63,8 @@ object AppConstants {
 
     object Verification {
         const val QR_MAX_AGE_SECONDS: Long = 300L // 5 minutes
+        const val QR_MAX_FUTURE_SKEW_SECONDS: Long = 60L
+        const val PENDING_VERIFICATION_TTL_MS: Long = 120_000L
     }
 
     object Protocol {

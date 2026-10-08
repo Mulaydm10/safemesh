@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +43,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -59,6 +61,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -106,6 +109,50 @@ fun VerificationSheet(
 
     val qrString = remember(nickname, npub) {
         viewModel.buildMyQRString(nickname, npub)
+    }
+
+    val pendingDeepLink by viewModel.pendingDeepLinkVerification.collectAsStateWithLifecycle()
+    pendingDeepLink?.let { qr ->
+        val fingerprint = remember(qr.noiseKeyHex) { viewModel.fingerprintForNoiseHex(qr.noiseKeyHex) }
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelDeepLinkVerification() },
+            title = {
+                Text(
+                    text = stringResource(R.string.verify_link_confirm_title),
+                    fontFamily = BitchatFontFamily
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = stringResource(R.string.verify_link_confirm_body, qr.nickname),
+                        fontFamily = BitchatFontFamily,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = fingerprint?.let { formatFingerprint(it) } ?: stringResource(R.string.verify_qr_unavailable),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = fingerprint != null,
+                    onClick = {
+                        if (viewModel.confirmDeepLinkVerification()) selectedTab = 0
+                    }
+                ) {
+                    Text(stringResource(R.string.verify_link_confirm_action), fontFamily = BitchatFontFamily)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelDeepLinkVerification() }) {
+                    Text(stringResource(R.string.cancel), fontFamily = BitchatFontFamily)
+                }
+            }
+        )
     }
 
     BitchatBottomSheet(

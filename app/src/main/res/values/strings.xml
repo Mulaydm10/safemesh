@@ -486,6 +486,9 @@
   <string name="verify_paste_label">Paste verification URL</string>
   <string name="verify_validate">Validate</string>
   <string name="verify_scanned">Verification requested</string>
+  <string name="verify_link_confirm_title">Verify from link?</string>
+  <string name="verify_link_confirm_body">A link asked to verify \"%1$s\". Only confirm if this person is with you and the fingerprint on their device matches this one:</string>
+  <string name="verify_link_confirm_action">They\'re here, verify</string>
   <string name="security_verification_title">Security verification</string>
   <string name="fingerprint_their">Their fingerprint</string>
   <string name="fingerprint_yours">Your fingerprint</string>

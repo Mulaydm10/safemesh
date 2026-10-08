@@ -10,6 +10,7 @@ import com.bitchat.android.noise.NoiseSession
 import com.bitchat.android.nostr.GeohashAliasRegistry
 import com.bitchat.android.services.ContactIdentityResolver
 import com.bitchat.android.services.VerificationService
+import com.bitchat.android.util.AppConstants
 import com.bitchat.android.util.dataFromHexString
 import com.bitchat.android.util.hexEncodedString
 import kotlinx.coroutines.CoroutineScope
@@ -75,10 +76,18 @@ class VerificationHandler(
             noiseKeyHex == targetNoise
         } ?: return false
 
-        if (pendingQRVerifications.containsKey(peerID)) return true
+        // The QR is self-signed, so its signing key must match the one this peer announced.
+        val announcedSignKey = meshService.getPeerInfo(peerID)?.signingPublicKey?.hexEncodedString()?.lowercase()
+        if (announcedSignKey == null || announcedSignKey != qr.signKeyHex.lowercase()) return false
+
+        val now = System.currentTimeMillis()
+        val existing = pendingQRVerifications[peerID]
+        if (existing != null && !existing.isExpired(now) &&
+            existing.signKeyHex.equals(qr.signKeyHex, ignoreCase = true)
+        ) return true
         val nonce = ByteArray(16)
         java.security.SecureRandom().nextBytes(nonce)
-        val pending = PendingVerification(qr.noiseKeyHex, qr.signKeyHex, nonce, System.currentTimeMillis(), false)
+        val pending = PendingVerification(qr.noiseKeyHex, qr.signKeyHex, nonce, now, false)
         pendingQRVerifications[peerID] = pending
 
         if (meshService.getSessionState(peerID) is NoiseSession.NoiseSessionState.Established) {
@@ -87,16 +96,15 @@ class VerificationHandler(
         } else {
             meshService.initiateNoiseHandshake(peerID)
         }
-        fingerprintFromNoiseHex(qr.noiseKeyHex)?.let { fp ->
-            identityManager.cacheFingerprintNickname(fp, qr.nickname)
-            identityManager.cacheNoiseFingerprint(qr.noiseKeyHex, fp)
-            identityManager.cachePeerNoiseKey(peerID, qr.noiseKeyHex)
-        }
         return true
     }
 
     fun sendPendingVerificationIfNeeded(peerID: String) {
         val pending = pendingQRVerifications[peerID] ?: return
+        if (pending.isExpired(System.currentTimeMillis())) {
+            pendingQRVerifications.remove(peerID, pending)
+            return
+        }
         if (pending.sent) return
         meshService.sendVerifyChallenge(peerID, pending.noiseKeyHex, pending.nonceA)
         pendingQRVerifications[peerID] = pending.copy(sent = true)
@@ -135,6 +143,10 @@ class VerificationHandler(
         scope.launch {
             val resp = VerificationService.parseVerifyResponse(payload) ?: return@launch
             val pending = pendingQRVerifications[peerID] ?: return@launch
+            if (pending.isExpired(System.currentTimeMillis())) {
+                pendingQRVerifications.remove(peerID, pending)
+                return@launch
+            }
             if (!resp.noiseKeyHex.equals(pending.noiseKeyHex, ignoreCase = true)) return@launch
             if (!resp.nonceA.contentEquals(pending.nonceA)) return@launch
 
@@ -146,8 +158,9 @@ class VerificationHandler(
             )
             if (!ok) return@launch
 
-            pendingQRVerifications.remove(peerID)
             val fp = meshService.getPeerFingerprint(peerID) ?: return@launch
+            if (fp != fingerprintFromNoiseHex(pending.noiseKeyHex)) return@launch
+            pendingQRVerifications.remove(peerID, pending)
             identityManager.setVerifiedFingerprint(fp, true)
             val current = _verifiedFingerprints.value.toMutableSet()
             current.add(fp)
@@ -331,7 +344,7 @@ class VerificationHandler(
         notificationManager.showVerificationNotification(title, body, peerID)
     }
 
-    private fun fingerprintFromNoiseHex(noiseHex: String): String? {
+    fun fingerprintFromNoiseHex(noiseHex: String): String? {
         val bytes = noiseHex.dataFromHexString() ?: return null
         return fingerprintFromNoiseBytes(bytes)
     }
@@ -348,6 +361,9 @@ class VerificationHandler(
         val startedAtMs: Long,
         val sent: Boolean
     ) {
+        fun isExpired(nowMs: Long): Boolean =
+            nowMs - startedAtMs > AppConstants.Verification.PENDING_VERIFICATION_TTL_MS
+
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
