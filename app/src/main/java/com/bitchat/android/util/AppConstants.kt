@@ -43,6 +43,8 @@ object AppConstants {
         const val MAX_FRAGMENT_TOTAL_BYTES: Int = 1_048_576
         const val MAX_ACTIVE_FRAGMENT_SETS: Int = 64
         const val MAX_GLOBAL_FRAGMENT_TOTAL_BYTES: Long = 4L * 1_048_576L
+        const val MAX_ACTIVE_FRAGMENT_SETS_PER_LINK: Int = 8
+        const val MAX_FRAGMENT_BYTES_PER_LINK: Long = 2L * 1_048_576L
     }
 
     object Security {

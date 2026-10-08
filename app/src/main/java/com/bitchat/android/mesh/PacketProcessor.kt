@@ -207,7 +207,11 @@ class PacketProcessor(private val myPeerID: String) {
      * Handle message fragments
      */
     private suspend fun handleFragment(routed: RoutedPacket) {
-        val reassembledPacket = delegate?.handleFragment(routed.packet)
+        val ingressLinkKey = routed.ingressLinkID
+            ?: routed.relayAddress
+            ?: routed.peerID
+            ?: FragmentManager.LOCAL_LINK_KEY
+        val reassembledPacket = delegate?.handleFragment(routed.packet, ingressLinkKey)
         if (reassembledPacket != null) {
             handleReceivedPacket(
                 RoutedPacket(
@@ -299,7 +303,7 @@ interface PacketProcessorDelegate {
     fun handleMessage(routed: RoutedPacket)
     fun handleVoiceFrame(routed: RoutedPacket): Boolean = false
     fun handleLeave(routed: RoutedPacket)
-    fun handleFragment(packet: BitchatPacket): BitchatPacket?
+    fun handleFragment(packet: BitchatPacket, ingressLinkKey: String): BitchatPacket?
     fun handleRequestSync(routed: RoutedPacket)
     
     // Communication

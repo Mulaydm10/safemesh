@@ -6,7 +6,8 @@ import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.protocol.MessagePadding
 import com.bitchat.android.model.FragmentPayload
 import kotlinx.coroutines.*
-import java.util.concurrent.ConcurrentHashMap
+import com.bitchat.android.util.AppConstants
+import com.bitchat.android.util.toHexString
 
 /**
  * Manages message fragmentation and reassembly - 100% iOS Compatible
@@ -21,6 +22,7 @@ class FragmentManager {
     
     companion object {
         private const val TAG = "FragmentManager"
+        const val LOCAL_LINK_KEY = "local"
         // iOS values: 512 MTU threshold, 469 max fragment size (512 MTU - headers)
         private const val FRAGMENT_SIZE_THRESHOLD = com.bitchat.android.util.AppConstants.Fragmentation.FRAGMENT_SIZE_THRESHOLD // Matches iOS: if data.count > 512
         private const val MAX_FRAGMENT_SIZE = com.bitchat.android.util.AppConstants.Fragmentation.MAX_FRAGMENT_SIZE        // Matches iOS: maxFragmentSize = 469 
@@ -28,14 +30,29 @@ class FragmentManager {
         private const val CLEANUP_INTERVAL = com.bitchat.android.util.AppConstants.Fragmentation.CLEANUP_INTERVAL_MS     // 10 seconds cleanup check
     }
     
-    // Fragment storage - iOS equivalent: incomingFragments: [String: [Int: Data]]
-    private val incomingFragments = ConcurrentHashMap<String, MutableMap<Int, ByteArray>>()
-    // iOS equivalent: fragmentMetadata: [String: (type: UInt8, total: Int, timestamp: Date)]
-    private val fragmentMetadata = ConcurrentHashMap<String, Triple<UByte, Int, Long>>() // originalType, totalFragments, timestamp
-    private val fragmentCumulativeSize = ConcurrentHashMap<String, Int>()
+    /**
+     * In-flight reassembly state. Sets are keyed by (senderID, fragmentID) so one sender cannot
+     * address another sender's sets, and each set is charged to the ingress link that opened it
+     * so a single link cannot take the whole global budget.
+     */
+    private class FragmentSet(
+        val originalType: UByte,
+        val total: Int,
+        val createdAt: Long,
+        val linkKey: String
+    ) {
+        val fragments = arrayOfNulls<ByteArray>(total)
+        var receivedCount = 0
+        var bytes = 0
+    }
+
+    private val fragmentSets = HashMap<String, FragmentSet>()
+    private val linkActiveSets = HashMap<String, Int>()
+    private val linkBufferedBytes = HashMap<String, Long>()
 
     private val fragmentStateLock = Any()
     private var globalBufferedBytes: Long = 0L
+
 
     // Delegate for callbacks
     var delegate: FragmentManagerDelegate? = null
@@ -164,137 +181,125 @@ class FragmentManager {
     }
     
     /**
-     * Handle incoming fragment - 100% iOS Compatible  
-     * Matches iOS handleFragment() implementation exactly
+     * Handle incoming fragment - iOS-compatible wire format.
+     *
+     * [ingressLinkKey] identifies the link the fragment arrived on and is used only for
+     * per-link quotas; reassembly itself spans links so multi-path relay still completes.
      */
-    fun handleFragment(packet: BitchatPacket): BitchatPacket? {
-        // iOS: guard packet.payload.count > 13 else { return }
+    fun handleFragment(packet: BitchatPacket, ingressLinkKey: String = LOCAL_LINK_KEY): BitchatPacket? {
         if (packet.payload.size < FragmentPayload.HEADER_SIZE) {
             Log.d(TAG, "Fragment packet too small: ${packet.payload.size}")
             return null
         }
-        
-        // Don't process our own fragments - iOS equivalent check
-        // This would be done at a higher level but we'll include for safety
-        
+
         try {
-            // Use FragmentPayload for type-safe decoding
             val fragmentPayload = FragmentPayload.decode(packet.payload)
             if (fragmentPayload == null || !fragmentPayload.isValid()) {
                 Log.d(TAG, "Invalid fragment payload")
                 return null
             }
 
-            // iOS: let fragmentID = packet.payload[0..<8].map { String(format: "%02x", $0) }.joined()
-            val fragmentIDString = fragmentPayload.getFragmentIDString()
-
-            val maxFragments = com.bitchat.android.util.AppConstants.Fragmentation.MAX_FRAGMENTS_PER_ID
+            val maxFragments = AppConstants.Fragmentation.MAX_FRAGMENTS_PER_ID
             if (fragmentPayload.total > maxFragments) {
                 Log.w(TAG, "Rejecting fragment with excessive total count: ${fragmentPayload.total} > $maxFragments")
                 return null
             }
+            if (fragmentPayload.data.size > AppConstants.Fragmentation.MAX_FRAGMENT_TOTAL_BYTES) {
+                return null
+            }
+
+            val setKey = "${packet.senderID.toHexString()}:${fragmentPayload.getFragmentIDString()}"
 
             synchronized(fragmentStateLock) {
-                fragmentMetadata[fragmentIDString]?.let { (expectedType, expectedTotal, _) ->
-                    if (expectedTotal != fragmentPayload.total || expectedType != fragmentPayload.originalType) {
-                        Log.w(TAG, "Rejecting fragment for $fragmentIDString: inconsistent metadata")
-                        removeFragmentSetLocked(fragmentIDString)
+                var set = fragmentSets[setKey]
+                if (set != null) {
+                    // A mismatching or duplicate fragment never alters the existing set.
+                    if (set.total != fragmentPayload.total || set.originalType != fragmentPayload.originalType) {
+                        Log.w(TAG, "Dropping fragment for $setKey: inconsistent metadata")
                         return null
                     }
-                }
-
-                val isNewSet = !incomingFragments.containsKey(fragmentIDString)
-                if (isNewSet) {
-                    val maxActive = com.bitchat.android.util.AppConstants.Fragmentation.MAX_ACTIVE_FRAGMENT_SETS
-                    if (incomingFragments.size >= maxActive) {
-                        Log.w(TAG, "Rejecting new fragment set $fragmentIDString: active fragment sets ${incomingFragments.size} >= $maxActive")
+                    if (set.fragments[fragmentPayload.index] != null) {
                         return null
                     }
-
-                    incomingFragments[fragmentIDString] = mutableMapOf()
-                    fragmentMetadata[fragmentIDString] = Triple(
-                        fragmentPayload.originalType,
-                        fragmentPayload.total,
-                        System.currentTimeMillis()
+                } else {
+                    if (fragmentSets.size >= AppConstants.Fragmentation.MAX_ACTIVE_FRAGMENT_SETS) {
+                        Log.w(TAG, "Rejecting new fragment set $setKey: global active set cap reached")
+                        return null
+                    }
+                    val linkSets = linkActiveSets[ingressLinkKey] ?: 0
+                    if (linkSets >= AppConstants.Fragmentation.MAX_ACTIVE_FRAGMENT_SETS_PER_LINK) {
+                        Log.w(TAG, "Rejecting new fragment set $setKey: per-link active set cap reached")
+                        return null
+                    }
+                    set = FragmentSet(
+                        originalType = fragmentPayload.originalType,
+                        total = fragmentPayload.total,
+                        createdAt = System.currentTimeMillis(),
+                        linkKey = ingressLinkKey
                     )
-                    fragmentCumulativeSize[fragmentIDString] = 0
+                    fragmentSets[setKey] = set
+                    linkActiveSets[ingressLinkKey] = linkSets + 1
                 }
 
-                val fragmentMap = incomingFragments[fragmentIDString]
-                if (fragmentMap == null) {
-                    Log.w(TAG, "Dropping fragment set $fragmentIDString due to missing fragment map")
-                    removeFragmentSetLocked(fragmentIDString)
+                val size = fragmentPayload.data.size
+                if (set.bytes + size > AppConstants.Fragmentation.MAX_FRAGMENT_TOTAL_BYTES) {
+                    Log.w(TAG, "Dropping fragment set $setKey: cumulative size exceeds per-set cap")
+                    removeFragmentSetLocked(setKey)
                     return null
                 }
-
-                val currentSize = fragmentCumulativeSize[fragmentIDString]
-                if (currentSize == null) {
-                    Log.w(TAG, "Dropping fragment set $fragmentIDString due to missing size tracker")
-                    removeFragmentSetLocked(fragmentIDString)
-                    return null
-                }
-
-                val oldEntrySize = fragmentMap[fragmentPayload.index]?.size ?: 0
-                val newSize = currentSize - oldEntrySize + fragmentPayload.data.size
-                val maxTotalBytes = com.bitchat.android.util.AppConstants.Fragmentation.MAX_FRAGMENT_TOTAL_BYTES
-                if (newSize > maxTotalBytes) {
-                    Log.w(TAG, "Rejecting fragment for $fragmentIDString: cumulative size $newSize exceeds cap $maxTotalBytes")
-                    removeFragmentSetLocked(fragmentIDString)
-                    return null
-                }
-
-                val delta = (fragmentPayload.data.size - oldEntrySize).toLong()
-                val maxGlobalBytes = com.bitchat.android.util.AppConstants.Fragmentation.MAX_GLOBAL_FRAGMENT_TOTAL_BYTES
-                if (globalBufferedBytes + delta > maxGlobalBytes) {
-                    Log.w(TAG, "Rejecting fragment for $fragmentIDString: global buffered bytes exceed cap $maxGlobalBytes")
-                    if (isNewSet) {
-                        removeFragmentSetLocked(fragmentIDString)
+                val linkBytes = linkBufferedBytes[set.linkKey] ?: 0L
+                if (linkBytes + size > AppConstants.Fragmentation.MAX_FRAGMENT_BYTES_PER_LINK ||
+                    globalBufferedBytes + size > AppConstants.Fragmentation.MAX_GLOBAL_FRAGMENT_TOTAL_BYTES
+                ) {
+                    Log.w(TAG, "Rejecting fragment for $setKey: buffered byte cap reached")
+                    if (set.receivedCount == 0) {
+                        removeFragmentSetLocked(setKey)
                     }
                     return null
                 }
 
-                fragmentMap[fragmentPayload.index] = fragmentPayload.data
-                fragmentCumulativeSize[fragmentIDString] = newSize
-                globalBufferedBytes += delta
+                set.fragments[fragmentPayload.index] = fragmentPayload.data
+                set.receivedCount += 1
+                set.bytes += size
+                linkBufferedBytes[set.linkKey] = linkBytes + size
+                globalBufferedBytes += size
 
-                val expectedTotal = fragmentMetadata[fragmentIDString]?.second ?: fragmentPayload.total
-                if (fragmentMap.size == expectedTotal) {
-                    // iOS reassembly logic: for i in 0..<total { if let fragment = fragments[i] { reassembled.append(fragment) } }
-                    val reassembledData = mutableListOf<Byte>()
-                    for (i in 0 until expectedTotal) {
-                        fragmentMap[i]?.let { data ->
-                            reassembledData.addAll(data.asIterable())
-                        }
-                    }
-
-                    val originalPacket = BitchatPacket.fromBinaryData(reassembledData.toByteArray())
-                    if (originalPacket != null) {
-                        removeFragmentSetLocked(fragmentIDString)
-
-                        val suppressedTtlPacket = originalPacket.copy(ttl = 0u.toUByte())
-                        return suppressedTtlPacket
-                    } else {
-                        val metadata = fragmentMetadata[fragmentIDString]
-                        Log.e(TAG, "Failed to decode reassembled packet (type=${metadata?.first}, total=${metadata?.second})")
-                    }
+                if (set.receivedCount < set.total) {
+                    return null
                 }
+
+                // Complete: always release the set, whether or not it decodes.
+                removeFragmentSetLocked(setKey)
+                val reassembled = ByteArray(set.bytes)
+                var offset = 0
+                for (chunk in set.fragments) {
+                    chunk!!.copyInto(reassembled, offset)
+                    offset += chunk.size
+                }
+                val originalPacket = BitchatPacket.fromBinaryData(reassembled)
+                if (originalPacket == null) {
+                    Log.e(TAG, "Failed to decode reassembled packet (type=${set.originalType}, total=${set.total})")
+                    return null
+                }
+                return originalPacket.copy(ttl = 0u.toUByte())
             }
-            
         } catch (e: Exception) {
             Log.e(TAG, "Failed to handle fragment: ${e.message}")
         }
-        
+
         return null
     }
 
-    private fun removeFragmentSetLocked(fragmentIDString: String) {
-        incomingFragments.remove(fragmentIDString)
-        fragmentMetadata.remove(fragmentIDString)
-        val bytes = fragmentCumulativeSize.remove(fragmentIDString)?.toLong() ?: 0L
-        if (bytes != 0L) {
-            globalBufferedBytes = (globalBufferedBytes - bytes).coerceAtLeast(0L)
-        }
+    private fun removeFragmentSetLocked(setKey: String) {
+        val set = fragmentSets.remove(setKey) ?: return
+        val link = set.linkKey
+        val sets = (linkActiveSets[link] ?: 1) - 1
+        if (sets <= 0) linkActiveSets.remove(link) else linkActiveSets[link] = sets
+        val bytes = (linkBufferedBytes[link] ?: 0L) - set.bytes
+        if (bytes <= 0L) linkBufferedBytes.remove(link) else linkBufferedBytes[link] = bytes
+        globalBufferedBytes = (globalBufferedBytes - set.bytes).coerceAtLeast(0L)
     }
+
     
     /**
      * Helper function to match iOS stride functionality
@@ -319,8 +324,7 @@ class FragmentManager {
             val now = System.currentTimeMillis()
             val cutoff = now - FRAGMENT_TIMEOUT
 
-            // iOS: let oldFragments = fragmentMetadata.filter { $0.value.timestamp < cutoff }.map { $0.key }
-            val oldFragments = fragmentMetadata.filter { it.value.third < cutoff }.map { it.key }
+            val oldFragments = fragmentSets.filter { it.value.createdAt < cutoff }.map { it.key }
 
             for (fragmentID in oldFragments) {
                 removeFragmentSetLocked(fragmentID)
@@ -335,17 +339,14 @@ class FragmentManager {
         synchronized(fragmentStateLock) {
             return buildString {
                 appendLine("=== Fragment Manager Debug Info (iOS Compatible) ===")
-                appendLine("Active Fragment Sets: ${incomingFragments.size}")
+                appendLine("Active Fragment Sets: ${fragmentSets.size}")
                 appendLine("Fragment Size Threshold: $FRAGMENT_SIZE_THRESHOLD bytes")
                 appendLine("Max Fragment Size: $MAX_FRAGMENT_SIZE bytes")
                 appendLine("Global Buffered Bytes: $globalBufferedBytes")
 
-                fragmentMetadata.forEach { (fragmentID, metadata) ->
-                    val (originalType, totalFragments, timestamp) = metadata
-                    val received = incomingFragments[fragmentID]?.size ?: 0
-                    val ageSeconds = (System.currentTimeMillis() - timestamp) / 1000
-                    val bytes = fragmentCumulativeSize[fragmentID] ?: 0
-                    appendLine("  - $fragmentID: $received/$totalFragments fragments, bytes=$bytes, type: $originalType, age: ${ageSeconds}s")
+                fragmentSets.forEach { (setKey, set) ->
+                    val ageSeconds = (System.currentTimeMillis() - set.createdAt) / 1000
+                    appendLine("  - $setKey: ${set.receivedCount}/${set.total} fragments, bytes=${set.bytes}, type: ${set.originalType}, age: ${ageSeconds}s")
                 }
             }
         }
@@ -368,9 +369,9 @@ class FragmentManager {
      */
     fun clearAllFragments() {
         synchronized(fragmentStateLock) {
-            incomingFragments.clear()
-            fragmentMetadata.clear()
-            fragmentCumulativeSize.clear()
+            fragmentSets.clear()
+            linkActiveSets.clear()
+            linkBufferedBytes.clear()
             globalBufferedBytes = 0L
         }
     }

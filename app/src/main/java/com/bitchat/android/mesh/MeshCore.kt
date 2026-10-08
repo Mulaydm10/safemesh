@@ -494,14 +494,14 @@ class MeshCore(
                 scope.launch { messageHandler.handleLeave(routed) }
             }
 
-            override fun handleFragment(packet: BitchatPacket): BitchatPacket? {
+            override fun handleFragment(packet: BitchatPacket, ingressLinkKey: String): BitchatPacket? {
                 try {
                     val isBroadcast = (packet.recipientID == null || packet.recipientID.contentEquals(SpecialRecipients.BROADCAST))
                     if (isBroadcast && packet.type == MessageType.FRAGMENT.value) {
                         gossipSyncManager.onPublicPacketSeen(packet)
                     }
                 } catch (_: Exception) { }
-                return fragmentManager.handleFragment(packet)
+                return fragmentManager.handleFragment(packet, ingressLinkKey)
             }
 
             override fun sendAnnouncementToPeer(peerID: String) {

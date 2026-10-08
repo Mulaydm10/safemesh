@@ -123,7 +123,7 @@ class PacketProcessorAnnounceSideEffectTest {
         }
         override fun handleMessage(routed: RoutedPacket) = Unit
         override fun handleLeave(routed: RoutedPacket) = Unit
-        override fun handleFragment(packet: BitchatPacket): BitchatPacket? = null
+        override fun handleFragment(packet: BitchatPacket, ingressLinkKey: String): BitchatPacket? = null
         override fun handleRequestSync(routed: RoutedPacket) = Unit
         override fun sendAnnouncementToPeer(peerID: String) = Unit
         override fun sendCachedMessages(peerID: String) = Unit

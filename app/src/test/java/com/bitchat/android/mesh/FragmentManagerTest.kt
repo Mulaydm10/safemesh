@@ -244,6 +244,94 @@ class FragmentManagerTest {
         assertEquals(257, plan(low).size)
     }
 
+    private fun largePacket(seed: Long): BitchatPacket = BitchatPacket(
+        version = 1u,
+        type = MessageType.FILE_TRANSFER.value,
+        senderID = hexStringToByteArray(senderID),
+        recipientID = hexStringToByteArray(recipientID),
+        timestamp = 1u,
+        payload = ByteArray(1500).also { Random(seed).nextBytes(it) },
+        ttl = 7u
+    )
+
+    private fun forgedFragment(
+        sender: String,
+        fragmentID: ByteArray,
+        index: Int,
+        total: Int,
+        originalType: UByte = MessageType.FILE_TRANSFER.value,
+        data: ByteArray = byteArrayOf(0x42)
+    ): BitchatPacket = BitchatPacket(
+        version = 1u,
+        type = MessageType.FRAGMENT.value,
+        senderID = hexStringToByteArray(sender),
+        recipientID = hexStringToByteArray(recipientID),
+        timestamp = 2u,
+        payload = FragmentPayload(fragmentID, index, total, originalType, data).encode(),
+        ttl = 7u
+    )
+
+    private fun fragmentIdOf(fragment: BitchatPacket): ByteArray =
+        FragmentPayload.decode(fragment.payload)!!.fragmentID
+
+    private fun feed(fragments: List<BitchatPacket>, link: String = "victim-link"): BitchatPacket? =
+        fragments.firstNotNullOfOrNull { fragmentManager.handleFragment(it, link) }
+
+    @Test
+    fun `colliding fragment from another sender cannot disturb a set`() {
+        val original = largePacket(1)
+        val fragments = fragmentManager.createFragments(original)
+        val id = fragmentIdOf(fragments[0])
+
+        assertNull(fragmentManager.handleFragment(fragments[0], "victim-link"))
+        assertNull(fragmentManager.handleFragment(forgedFragment(recipientID, id, 1, fragments.size + 1), "attacker-link"))
+        assertNull(fragmentManager.handleFragment(forgedFragment(recipientID, id, 1, fragments.size), "attacker-link"))
+
+        val result = feed(fragments.drop(1))
+        assertNotNull(result)
+        assertTrue(original.payload.contentEquals(result!!.payload))
+    }
+
+    @Test
+    fun `mismatching or duplicate fragment is dropped without touching the set`() {
+        val original = largePacket(2)
+        val fragments = fragmentManager.createFragments(original)
+        val id = fragmentIdOf(fragments[0])
+
+        assertNull(fragmentManager.handleFragment(fragments[0], "victim-link"))
+        assertNull(fragmentManager.handleFragment(fragments[1], "victim-link"))
+        // Spoofed sender: wrong total must not delete the set, and index 1 must not be overwritten.
+        assertNull(fragmentManager.handleFragment(forgedFragment(senderID, id, 0, fragments.size + 1), "attacker-link"))
+        assertNull(fragmentManager.handleFragment(forgedFragment(senderID, id, 1, fragments.size), "attacker-link"))
+
+        val result = feed(fragments.drop(2))
+        assertNotNull(result)
+        assertTrue(original.payload.contentEquals(result!!.payload))
+    }
+
+    @Test
+    fun `one link cannot exhaust reassembly slots for other links`() {
+        val perLink = com.bitchat.android.util.AppConstants.Fragmentation.MAX_ACTIVE_FRAGMENT_SETS_PER_LINK
+        repeat(perLink + 4) { n ->
+            val id = ByteArray(8) { (n + 1).toByte() }
+            fragmentManager.handleFragment(forgedFragment(recipientID, id, 0, 256), "attacker-link")
+        }
+        assertTrue(fragmentManager.getDebugInfo().contains("Active Fragment Sets: $perLink"))
+
+        val original = largePacket(3)
+        val result = feed(fragmentManager.createFragments(original))
+        assertNotNull(result)
+        assertTrue(original.payload.contentEquals(result!!.payload))
+    }
+
+    @Test
+    fun `completed set that fails to decode is released`() {
+        val id = ByteArray(8) { 9 }
+        assertNull(fragmentManager.handleFragment(forgedFragment(recipientID, id, 0, 2), "link"))
+        assertNull(fragmentManager.handleFragment(forgedFragment(recipientID, id, 1, 2), "link"))
+        assertTrue(fragmentManager.getDebugInfo().contains("Active Fragment Sets: 0"))
+    }
+
     private fun hexStringToByteArray(hexString: String): ByteArray {
         val result = ByteArray(8)
         for (i in 0 until 8) {

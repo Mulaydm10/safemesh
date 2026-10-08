@@ -621,7 +621,7 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
                 serviceScope.launch { messageHandler.handleLeave(routed) }
             }
             
-            override fun handleFragment(packet: BitchatPacket): BitchatPacket? {
+            override fun handleFragment(packet: BitchatPacket, ingressLinkKey: String): BitchatPacket? {
                 // Track broadcast fragments for gossip sync
                 try {
                     val isBroadcast = (packet.recipientID == null || packet.recipientID.contentEquals(SpecialRecipients.BROADCAST))
@@ -629,7 +629,7 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
                         gossipSyncManager.onPublicPacketSeen(packet)
                     }
                 } catch (_: Exception) { }
-                return fragmentManager.handleFragment(packet)
+                return fragmentManager.handleFragment(packet, ingressLinkKey)
             }
             
             override fun sendAnnouncementToPeer(peerID: String) {
