@@ -1,6 +1,7 @@
 package com.bitchat.android.noise
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.bitchat.android.noise.southernstorm.protocol.*
 import java.security.SecureRandom
 
@@ -37,8 +38,8 @@ class NoiseSession(
         
         // Constants for replay protection (matching iOS implementation)
         private const val NONCE_SIZE_BYTES = 4
-        private const val REPLAY_WINDOW_SIZE = 1024
-        private const val REPLAY_WINDOW_BYTES = REPLAY_WINDOW_SIZE / 8 // 128 bytes
+        internal const val REPLAY_WINDOW_SIZE = 1024
+        internal const val REPLAY_WINDOW_BYTES = REPLAY_WINDOW_SIZE / 8 // 128 bytes
         private const val HIGH_NONCE_WARNING_THRESHOLD = com.bitchat.android.util.AppConstants.Noise.HIGH_NONCE_WARNING_THRESHOLD
         
         // MARK: - Sliding Window Replay Protection
@@ -46,7 +47,8 @@ class NoiseSession(
         /**
          * Check if nonce is valid for replay protection (matching iOS implementation)
          */
-        private fun isValidNonce(receivedNonce: Long, highestReceivedNonce: Long, replayWindow: ByteArray): Boolean {
+        @VisibleForTesting
+        internal fun isValidNonce(receivedNonce: Long, highestReceivedNonce: Long, replayWindow: ByteArray): Boolean {
             if (receivedNonce + REPLAY_WINDOW_SIZE <= highestReceivedNonce) {
                 return false  // Too old, outside window
             }
@@ -65,26 +67,31 @@ class NoiseSession(
         /**
          * Mark nonce as seen in replay window (matching iOS implementation)
          */
-        private fun markNonceAsSeen(receivedNonce: Long, highestReceivedNonce: Long, replayWindow: ByteArray): Pair<Long, ByteArray> {
+        @VisibleForTesting
+        internal fun markNonceAsSeen(receivedNonce: Long, highestReceivedNonce: Long, replayWindow: ByteArray): Pair<Long, ByteArray> {
             var newHighestReceivedNonce = highestReceivedNonce
             val newReplayWindow = replayWindow.copyOf()
             
             if (receivedNonce > highestReceivedNonce) {
-                val shift = (receivedNonce - highestReceivedNonce).toInt()
+                val distance = receivedNonce - highestReceivedNonce
                 
-                if (shift >= REPLAY_WINDOW_SIZE) {
+                if (distance >= REPLAY_WINDOW_SIZE) {
                     // Clear entire window - shift is too large
                     newReplayWindow.fill(0)
                 } else {
-                    // Shift window right by `shift` bits
+                    val shift = distance.toInt()
+                    // Bit `offset` lives at byte offset/8, bit offset%8, so every seen offset grows by
+                    // `shift`: move whole bytes up by shift/8 and bits toward the MSB by shift%8.
+                    val byteShift = shift / 8
+                    val bitShift = shift % 8
                     for (i in (REPLAY_WINDOW_BYTES - 1) downTo 0) {
-                        val sourceByteIndex = i - shift / 8
+                        val sourceByteIndex = i - byteShift
                         var newByte = 0
                         
                         if (sourceByteIndex >= 0) {
-                            newByte = (newReplayWindow[sourceByteIndex].toInt() and 0xFF) ushr (shift % 8)
-                            if (sourceByteIndex > 0 && shift % 8 != 0) {
-                                newByte = newByte or ((newReplayWindow[sourceByteIndex - 1].toInt() and 0xFF) shl (8 - shift % 8))
+                            newByte = (newReplayWindow[sourceByteIndex].toInt() and 0xFF) shl bitShift
+                            if (sourceByteIndex > 0 && bitShift != 0) {
+                                newByte = newByte or ((newReplayWindow[sourceByteIndex - 1].toInt() and 0xFF) ushr (8 - bitShift))
                             }
                         }
                         
