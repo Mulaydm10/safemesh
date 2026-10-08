@@ -128,7 +128,11 @@ fun ShareAppDialog(
                 HorizontalDivider()
                 Text("Verify", fontWeight = FontWeight.Bold)
                 when (isOfficial) {
-                    true -> Text("\u2713 This app is official SafeMesh", color = VerifiedGreen)
+                    true -> Text(
+                        "\u2713 This app reports it is official SafeMesh. A fake app could show this too, " +
+                            "so check new APK files from a copy you already trust.",
+                        color = VerifiedGreen
+                    )
                     false -> Text("\u26A0 This app is NOT an official SafeMesh build", color = SosRed)
                     null -> Text("Checking this app\u2026")
                 }
