@@ -3,6 +3,7 @@ package com.bitchat.android.ui
 import com.bitchat.android.mesh.BluetoothMeshDelegate
 import com.bitchat.android.ui.NotificationTextUtils
 import com.bitchat.android.mesh.MeshService
+import com.bitchat.android.mesh.PeerFingerprintManager
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.model.DeliveryStatus
 import com.bitchat.android.services.ContactDirectory
@@ -23,7 +24,9 @@ class MeshDelegateHandler(
     private val onHapticFeedback: () -> Unit,
     private val getMyPeerID: () -> String,
     private val getMeshService: () -> MeshService,
-    private val markMessageReadLocally: (messageID: String) -> Unit = {}
+    private val markMessageReadLocally: (messageID: String) -> Unit = {},
+    private val isPeerVerified: (peerID: String) -> Boolean = { false },
+    private val sosAlertPolicy: SosAlertPolicy = SosAlertPolicy()
 ) : BluetoothMeshDelegate {
 
     override fun didReceiveMessage(message: BitchatMessage) {
@@ -91,7 +94,7 @@ class MeshDelegateHandler(
                 // Public mesh message: AppStateStore is the source of truth; avoid double-adding to UI state
                 // Still run mention detection/notifications
                 if (SosFormat.isSos(message.content)) {
-                    notificationManager.showSosNotification(message.sender, message.content)
+                    triggerSosNotification(message)
                 } else {
                     checkAndTriggerMeshMentionNotification(message)
                 }
@@ -192,6 +195,23 @@ class MeshDelegateHandler(
         return privateChatManager.isFavorite(peerID)
     }
     
+    private fun triggerSosNotification(message: BitchatMessage) {
+        val senderPeerID = message.senderPeerID
+        val fingerprint = senderPeerID?.let { PeerFingerprintManager.getInstance().getFingerprintForPeer(it) }
+        val trusted = senderPeerID != null && fingerprint != null &&
+            (isPeerVerified(senderPeerID) || privateChatManager.isFavorite(senderPeerID))
+        val senderKey = fingerprint ?: senderPeerID ?: "unknown:${message.sender}"
+        val decision = sosAlertPolicy.evaluate(senderKey, trusted) ?: return
+        notificationManager.showSosNotification(
+            senderNickname = message.sender,
+            messageContent = message.content,
+            senderPeerID = senderPeerID,
+            senderFingerprint = fingerprint,
+            trusted = decision.trusted,
+            notificationId = decision.notificationId
+        )
+    }
+
     /**
      * Check for mentions in mesh messages and trigger notifications
      */
