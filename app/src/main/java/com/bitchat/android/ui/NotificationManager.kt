@@ -190,11 +190,11 @@ class NotificationManager(
             (!isAppInBackground && currentPrivateChatPeer != conversationID)
         
         if (!shouldNotify) {
-            Log.d(TAG, "Skipping notification - app in foreground and viewing chat with $senderNickname")
+            Log.d(TAG, "Skipping notification - app in foreground and viewing this chat")
             return
         }
 
-        Log.d(TAG, "Showing notification for message from $senderNickname (conversationID: $conversationID)")
+        Log.d(TAG, "Showing private message notification")
 
         val notification = PendingNotification(
             senderPeerID = conversationID,
@@ -351,7 +351,7 @@ class NotificationManager(
         val notificationId = senderPeerID.hashCode()
         notifySafely(notificationId, builder.build())
 
-        Log.d(TAG, "Displayed notification for $contentTitle with ID $notificationId")
+        Log.d(TAG, "Displayed notification with ID $notificationId")
     }
 
     private fun conversationShortcutID(conversationID: String): String =
@@ -774,7 +774,7 @@ class NotificationManager(
             return
         }
 
-        Log.d(TAG, "Showing mesh mention notification from $senderNickname")
+        Log.d(TAG, "Showing mesh mention notification")
 
         // Use a special key for mesh mentions to group them together
         val meshMentionKey = "mesh_mentions"
@@ -870,7 +870,7 @@ class NotificationManager(
         val notificationId = 4000 // Different from DM and geohash IDs
         notifySafely(notificationId, builder.build())
 
-        Log.d(TAG, "Displayed mesh mention notification: $contentTitle")
+        Log.d(TAG, "Displayed mesh mention notification")
     }
 
     /**

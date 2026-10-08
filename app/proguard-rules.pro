@@ -38,3 +38,11 @@
 -keepclassmembers class * implements android.location.LocationListener {
     public <methods>;
 }
+
+# Strip debug/verbose/info logging from release builds so nicknames, peer IDs,
+# fingerprints and file names never reach logcat or bug reports.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}

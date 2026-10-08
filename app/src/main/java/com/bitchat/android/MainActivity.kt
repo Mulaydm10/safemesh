@@ -808,7 +808,7 @@ class MainActivity : OrientationAwareActivity() {
                 val senderNickname = intent.getStringExtra(com.bitchat.android.ui.NotificationManager.EXTRA_SENDER_NICKNAME)
                 
                 if (peerID != null) {
-                    Log.d("MainActivity", "Opening private chat with $senderNickname (peerID: $peerID) from notification")
+                    Log.d("MainActivity", "Opening private chat from notification")
                     
                     // Open the private chat sheet with this peer
                     chatViewModel.showMeshPeerList()

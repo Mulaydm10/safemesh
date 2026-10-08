@@ -222,7 +222,7 @@ class NostrDirectMessageHandler(
                         senderPeerID = conversationID,
                         senderNostrPubkey = senderPubkey
                     )
-                    Log.d(TAG, "📄 Saved Nostr encrypted incoming file to $savedPath (msgId=$uniqueMsgId)")
+                    Log.d(TAG, "📄 Saved Nostr encrypted incoming file (msgId=$uniqueMsgId)")
                     val admitted = withContext(Dispatchers.Main) {
                         privateChatManager.handleIncomingPrivateMessageDurably(
                             message = message,
