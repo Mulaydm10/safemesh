@@ -384,7 +384,7 @@ class BluetoothGattClientManager(
         lastScanResultTime = System.currentTimeMillis()
         scanRetryCount = 0
 
-        // Try to extract peerID from Service Data (if available) for stable identity
+        // Advertised peerID is an unverified hint; identity comes only from validated announces
         val serviceData = scanRecord?.getServiceData(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID))
         val peerID = if (serviceData != null && serviceData.size >= 8) {
             serviceData.joinToString("") { "%02x".format(it) }
@@ -508,7 +508,7 @@ class BluetoothGattClientManager(
                         gatt = gatt,
                         rssi = rssi,
                         isClient = true,
-                        peerID = peerID, // Store the peerID discovered during scan
+                        peerID = peerID, // Unverified scan hint
                         linkID = linkID
                     )
                     connectionTracker.addDeviceConnection(deviceAddress, deviceConn)
