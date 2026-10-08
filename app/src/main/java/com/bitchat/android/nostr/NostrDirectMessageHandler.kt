@@ -58,6 +58,7 @@ class NostrDirectMessageHandler(
     fun onGiftWrap(giftWrap: NostrEvent, geohash: String, identity: NostrIdentity) {
         scope.launch {
             try {
+                if (!giftWrap.isValidSignature()) return@launch
                 if (dedupe(giftWrap.id)) return@launch
 
                 val messageAge = System.currentTimeMillis() / 1000 - giftWrap.createdAt

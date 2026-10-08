@@ -129,6 +129,7 @@ class NostrDirectMessageHandlerTest {
             giftWrapCreatedAt = now - 86_400
         )
 
+        handler.onGiftWrap(first.copy(content = "tampered"), "", recipient)
         handler.onGiftWrap(first, "", recipient)
         waitForMessage(state, firstId)
         handler.onGiftWrap(second, "", recipient)

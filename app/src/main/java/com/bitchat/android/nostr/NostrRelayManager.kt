@@ -936,7 +936,7 @@ class NostrRelayManager private constructor() {
                         }
                     }
 
-                    // DEDUPLICATION: Check if we've already processed this event
+                    // DEDUPLICATION: verifies id + signature before marking the event as seen
                     eventDeduplicator.processEvent(response.event) { event ->
                         // Call handler for new events only
                         val handler = messageHandlers[response.subscriptionId]
