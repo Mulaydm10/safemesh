@@ -3,6 +3,7 @@ package com.bitchat
 import com.bitchat.android.model.BitchatFilePacket
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.model.BitchatMessageType
+import com.bitchat.android.util.AppConstants
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -248,6 +249,66 @@ class FileTransferTest {
         assertEquals("padded.bin", decoded!!.fileName)
         assertEquals(content.size.toLong(), decoded.fileSize)
         assertEquals(content.size, decoded.content.size)
+    }
+
+    @Test
+    fun `decode should concatenate content split across several CONTENT TLVs`() {
+        // Given: content chunked into three CONTENT TLVs, one of them empty
+        val fileName = "chunked.bin".toByteArray(Charsets.UTF_8)
+        val chunks = listOf(ByteArray(70_000) { 0x11 }, ByteArray(0), ByteArray(5) { 0x22 })
+        val buf = ByteBuffer.allocate(
+            (1 + 2 + fileName.size) + chunks.sumOf { 1 + 4 + it.size }
+        ).order(ByteOrder.BIG_ENDIAN)
+        buf.put(0x01.toByte()); buf.putShort(fileName.size.toShort()); buf.put(fileName)
+        chunks.forEach { buf.put(0x04.toByte()); buf.putInt(it.size); buf.put(it) }
+
+        // When: Decoding
+        val decoded = BitchatFilePacket.decode(buf.array())
+
+        // Then: the chunks arrive in order as one content array
+        assertNotNull(decoded)
+        assertEquals(70_005, decoded!!.content.size)
+        assertEquals(0x11.toByte(), decoded.content[69_999])
+        assertEquals(0x22.toByte(), decoded.content[70_000])
+        assertEquals(70_005L, decoded.fileSize)
+    }
+
+    @Test(timeout = 10_000)
+    fun `decode should reject a packet flooded with tiny CONTENT TLVs`() {
+        // Given: ~1 MiB of 10-byte CONTENT TLVs. Concatenating them one by one
+        // copies the accumulated content per TLV, which is quadratic.
+        assertNull(BitchatFilePacket.decode(contentFlood(tlvCount = 100_000, valueSize = 5)))
+    }
+
+    @Test(timeout = 10_000)
+    fun `decode should reject a packet flooded with zero-length CONTENT TLVs`() {
+        // Given: a real content chunk followed by many empty CONTENT TLVs
+        assertNull(BitchatFilePacket.decode(contentFlood(tlvCount = 200_000, valueSize = 0, leadingContent = 65_535)))
+    }
+
+    @Test
+    fun `decode should reject content larger than the maximum file size`() {
+        // Given: two CONTENT TLVs whose lengths together exceed the cap
+        val half = (AppConstants.Media.MAX_FILE_SIZE_BYTES / 2 + 1).toInt()
+        val fileName = "big.bin".toByteArray(Charsets.UTF_8)
+        val buf = ByteBuffer.allocate((1 + 2 + fileName.size) + 2 * (1 + 4 + half)).order(ByteOrder.BIG_ENDIAN)
+        buf.put(0x01.toByte()); buf.putShort(fileName.size.toShort()); buf.put(fileName)
+        repeat(2) { buf.put(0x04.toByte()); buf.putInt(half); buf.put(ByteArray(half)) }
+
+        assertNull(BitchatFilePacket.decode(buf.array()))
+    }
+
+    private fun contentFlood(tlvCount: Int, valueSize: Int, leadingContent: Int = 0): ByteArray {
+        val fileName = "flood.bin".toByteArray(Charsets.UTF_8)
+        val buf = ByteBuffer.allocate(
+            (1 + 2 + fileName.size) + (1 + 4 + leadingContent) + tlvCount * (1 + 4 + valueSize)
+        ).order(ByteOrder.BIG_ENDIAN)
+        buf.put(0x01.toByte()); buf.putShort(fileName.size.toShort()); buf.put(fileName)
+        buf.put(0x04.toByte()); buf.putInt(leadingContent); buf.put(ByteArray(leadingContent))
+        repeat(tlvCount) {
+            buf.put(0x04.toByte()); buf.putInt(valueSize); buf.put(ByteArray(valueSize) { 0x41 })
+        }
+        return buf.array()
     }
 
     @Test

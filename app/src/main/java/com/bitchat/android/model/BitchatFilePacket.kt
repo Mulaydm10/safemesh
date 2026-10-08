@@ -1,5 +1,6 @@
 package com.bitchat.android.model
 
+import com.bitchat.android.util.AppConstants
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -97,79 +98,101 @@ data class BitchatFilePacket(
     }
 
     companion object {
+        private const val TAG = "BitchatFilePacket"
+        private const val MAX_TLV2_LENGTH = 0xFFFF
+
+        // encode() emits one CONTENT TLV; other encoders may chunk content
+        // into 65535-byte TLVs. Allow exactly enough chunks for the largest
+        // file we accept, so a packet cannot carry an unbounded number of
+        // (possibly zero-length) CONTENT TLVs.
+        private val MAX_CONTENT_TLVS: Int =
+            ((AppConstants.Media.MAX_FILE_SIZE_BYTES + MAX_TLV2_LENGTH - 1) / MAX_TLV2_LENGTH).toInt()
+
+        private inline fun forEachTLV(
+            data: ByteArray,
+            visit: (type: TLVType?, offset: Int, length: Int) -> Boolean
+        ): Boolean {
+            var off = 0
+            while (off < data.size) {
+                // Every TLV needs at least a type and a 2-byte length.
+                // Reject a truncated trailing header instead of silently
+                // accepting it, matching the iOS decoder.
+                if (data.size - off < 3) return false
+                // A null type is an unknown tag: read its length like any
+                // other 2-byte TLV and skip its value, matching iOS.
+                val t = TLVType.from(data[off].toUByte())
+                off += 1
+                // CONTENT uses 4-byte length; others use 2-byte length
+                val len: Int
+                if (t == TLVType.CONTENT) {
+                    if (off + 4 > data.size) return false
+                    len = ((data[off].toInt() and 0xFF) shl 24) or ((data[off + 1].toInt() and 0xFF) shl 16) or ((data[off + 2].toInt() and 0xFF) shl 8) or (data[off + 3].toInt() and 0xFF)
+                    off += 4
+                } else {
+                    len = ((data[off].toInt() and 0xFF) shl 8) or (data[off + 1].toInt() and 0xFF)
+                    off += 2
+                }
+                if (len < 0 || len > data.size - off) return false
+                if (!visit(t, off, len)) return false
+                off += len
+            }
+            return true
+        }
+
         fun decode(data: ByteArray): BitchatFilePacket? {
-            android.util.Log.d("BitchatFilePacket", "🔄 Decoding ${data.size} bytes")
             try {
-                var off = 0
+                // Pass 1: validate the framing and bound CONTENT before
+                // allocating anything. Per-TLV work here is O(1) with no
+                // copies or logging, because the TLV count is attacker-scaled
+                // (a zero-length unknown TLV is 3 bytes).
+                var contentTLVs = 0
+                var contentTotal = 0L
+                var skippedUnknownTLVs = 0
+                val wellFormed = forEachTLV(data) { t, _, len ->
+                    when (t) {
+                        null -> { skippedUnknownTLVs += 1; true }
+                        TLVType.FILE_SIZE -> len == 4
+                        TLVType.CONTENT -> {
+                            contentTLVs += 1
+                            contentTotal += len
+                            contentTLVs <= MAX_CONTENT_TLVS &&
+                                contentTotal <= AppConstants.Media.MAX_FILE_SIZE_BYTES
+                        }
+                        else -> true
+                    }
+                }
+                if (!wellFormed || contentTLVs == 0) return null
+
+                // Pass 2: copy every CONTENT value once into a buffer sized
+                // to the total, so decoding stays linear in the input size.
+                val content = ByteArray(contentTotal.toInt())
+                var contentOff = 0
                 var name: String? = null
                 var size: Long? = null
                 var mime: String? = null
-                var contentBytes: ByteArray? = null
-                var skippedUnknownTLVs = 0
-                while (off < data.size) {
-                    // Every TLV needs at least a type and a 2-byte length.
-                    // Reject a truncated trailing header instead of silently
-                    // accepting it, matching the iOS decoder.
-                    if (data.size - off < 3) return null
-                    // A null `t` is an unknown tag: read its length like any
-                    // other 2-byte TLV and skip its value, matching iOS.
-                    val t = TLVType.from(data[off].toUByte())
-                    off += 1
-                    // CONTENT uses 4-byte length; others use 2-byte length
-                    val len: Int
-                    if (t == TLVType.CONTENT) {
-                        if (off + 4 > data.size) return null
-                        len = ((data[off].toInt() and 0xFF) shl 24) or ((data[off + 1].toInt() and 0xFF) shl 16) or ((data[off + 2].toInt() and 0xFF) shl 8) or (data[off + 3].toInt() and 0xFF)
-                        off += 4
-                    } else {
-                        if (off + 2 > data.size) return null
-                        len = ((data[off].toInt() and 0xFF) shl 8) or (data[off + 1].toInt() and 0xFF)
-                        off += 2
-                    }
-                    if (len < 0 || off + len > data.size) return null
-                    if (t == null) {
-                        // Unknown tag: advance past the value without copying it
-                        // and without logging. A peer can pad a packet with
-                        // zero-length unknown TLVs — 3 bytes each — so anything
-                        // per-TLV here is attacker-scaled: at the payload
-                        // ceiling that is millions of copies and formatted log
-                        // lines monopolising the mesh handler. Counted and
-                        // reported once after the loop instead.
-                        off += len
-                        skippedUnknownTLVs += 1
-                        continue
-                    }
-                    val value = data.copyOfRange(off, off + len)
-                    off += len
+                forEachTLV(data) { t, off, len ->
                     when (t) {
-                        TLVType.FILE_NAME -> name = String(value, Charsets.UTF_8)
-                        TLVType.FILE_SIZE -> {
-                            if (len != 4) return null
-                            val bb = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN)
-                            size = bb.int.toLong()
-                        }
-                        TLVType.MIME_TYPE -> mime = String(value, Charsets.UTF_8)
+                        TLVType.FILE_NAME -> name = String(data, off, len, Charsets.UTF_8)
+                        TLVType.FILE_SIZE -> size = ByteBuffer.wrap(data, off, 4).order(ByteOrder.BIG_ENDIAN).int.toLong()
+                        TLVType.MIME_TYPE -> mime = String(data, off, len, Charsets.UTF_8)
                         TLVType.CONTENT -> {
-                            // Expect a single CONTENT TLV
-                            if (contentBytes == null) contentBytes = value else {
-                                // If multiple CONTENT TLVs appear, concatenate for tolerance
-                                contentBytes = (contentBytes!! + value)
-                            }
+                            System.arraycopy(data, off, content, contentOff, len)
+                            contentOff += len
                         }
+                        null -> Unit
                     }
+                    true
                 }
                 if (skippedUnknownTLVs > 0) {
-                    android.util.Log.d("BitchatFilePacket", "⏭️ Skipped $skippedUnknownTLVs unknown TLV(s)")
+                    android.util.Log.d(TAG, "⏭️ Skipped $skippedUnknownTLVs unknown TLV(s)")
                 }
                 val n = name ?: return null
-                val c = contentBytes ?: return null
-                val s = size ?: c.size.toLong()
+                val s = size ?: content.size.toLong()
                 val m = mime ?: "application/octet-stream"
-                val result = BitchatFilePacket(n, s, m, c)
-                android.util.Log.d("BitchatFilePacket", "✅ Decoded: size=$s, content=${c.size} bytes")
-                return result
+                android.util.Log.d(TAG, "✅ Decoded: size=$s, content=${content.size} bytes")
+                return BitchatFilePacket(n, s, m, content)
             } catch (e: Exception) {
-                android.util.Log.e("BitchatFilePacket", "❌ Decoding failed: ${e.message}", e)
+                android.util.Log.e(TAG, "❌ Decoding failed: ${e.message}", e)
                 return null
             }
         }
