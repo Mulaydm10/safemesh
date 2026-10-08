@@ -9,6 +9,8 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,9 +58,16 @@ class GeohashBookmarksStore private constructor(private val context: Context) {
     // For throttling / preventing duplicate geocode lookups
     private val resolving = mutableSetOf<String>()
 
+    // Name lookups are owned by this store so [clearAll] can cancel them. Geocoder calls block and
+    // ignore cancellation, so results are also tagged with the wipe generation they started under
+    // and discarded if a wipe happened since.
+    private val resolveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var wipeGeneration = 0L
+
     init { load() }
 
-    fun isBookmarked(geohash: String): Boolean = membership.contains(normalize(geohash))
+    fun isBookmarked(geohash: String): Boolean =
+        synchronized(this) { membership.contains(normalize(geohash)) }
 
     fun toggle(geohash: String) {
         val gh = normalize(geohash)
@@ -67,28 +76,32 @@ class GeohashBookmarksStore private constructor(private val context: Context) {
 
     fun add(geohash: String) {
         val gh = normalize(geohash)
-        if (gh.isEmpty() || membership.contains(gh)) return
-        membership.add(gh)
-        val updated = listOf(gh) + (_bookmarks.value)
-        _bookmarks.value = updated
-        persist(updated)
+        synchronized(this) {
+            if (gh.isEmpty() || membership.contains(gh)) return
+            membership.add(gh)
+            val updated = listOf(gh) + (_bookmarks.value)
+            _bookmarks.value = updated
+            persist(updated)
+        }
         // Resolve friendly name asynchronously
         resolveNameIfNeeded(gh)
     }
 
     fun remove(geohash: String) {
         val gh = normalize(geohash)
-        if (!membership.contains(gh)) return
-        membership.remove(gh)
-        val updated = (_bookmarks.value).filterNot { it == gh }
-        _bookmarks.value = updated
-        // Remove stored name to avoid stale cache growth
-        val names = _bookmarkNames.value.toMutableMap()
-        if (names.remove(gh) != null) {
-            _bookmarkNames.value = names
-            persistNames(names)
+        synchronized(this) {
+            if (!membership.contains(gh)) return
+            membership.remove(gh)
+            val updated = (_bookmarks.value).filterNot { it == gh }
+            _bookmarks.value = updated
+            // Remove stored name to avoid stale cache growth
+            val names = _bookmarkNames.value.toMutableMap()
+            if (names.remove(gh) != null) {
+                _bookmarkNames.value = names
+                persistNames(names)
+            }
+            persist(updated)
         }
-        persist(updated)
     }
 
     // MARK: - Persistence
@@ -143,6 +156,12 @@ class GeohashBookmarksStore private constructor(private val context: Context) {
     // MARK: - Destructive Reset
 
     fun clearAll() {
+        synchronized(this) { clearAllLocked() }
+    }
+
+    private fun clearAllLocked() {
+        wipeGeneration += 1
+        resolveScope.coroutineContext.cancelChildren()
         try {
             membership.clear()
             _bookmarks.value = emptyList()
@@ -165,11 +184,12 @@ class GeohashBookmarksStore private constructor(private val context: Context) {
     fun resolveNameIfNeeded(geohash: String) {
         val gh = normalize(geohash)
         if (gh.isEmpty()) return
-        if (_bookmarkNames.value?.containsKey(gh) == true) return
-        if (resolving.contains(gh)) return
-
-        resolving.add(gh)
-        CoroutineScope(Dispatchers.IO).launch {
+        val generation = synchronized(this) {
+            if (_bookmarkNames.value.containsKey(gh)) return
+            if (!resolving.add(gh)) return
+            wipeGeneration
+        }
+        resolveScope.launch {
             try {
                 val geocoderProvider = GeocoderFactory.get(context)
                 val name: String? = if (gh.length <= 2) {
@@ -207,18 +227,30 @@ class GeohashBookmarksStore private constructor(private val context: Context) {
                 }
 
                 if (!name.isNullOrEmpty()) {
-                    val current = _bookmarkNames.value.toMutableMap()
-                    current[gh] = name
-                    _bookmarkNames.value = current
-                    persistNames(current)
+                    applyResolvedName(gh, name, generation)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Bookmark name resolution failed")
             } finally {
-                resolving.remove(gh)
+                synchronized(this@GeohashBookmarksStore) {
+                    if (generation == wipeGeneration) resolving.remove(gh)
+                }
             }
         }
     }
+
+    internal fun currentWipeGeneration(): Long = synchronized(this) { wipeGeneration }
+
+    /** Persists a looked-up name only if no wipe happened since and [gh] is still bookmarked. */
+    internal fun applyResolvedName(gh: String, name: String, generation: Long): Boolean =
+        synchronized(this) {
+            if (generation != wipeGeneration || !membership.contains(gh)) return false
+            val current = _bookmarkNames.value.toMutableMap()
+            current[gh] = name
+            _bookmarkNames.value = current
+            persistNames(current)
+            true
+        }
 
     private fun pickNameForLength(len: Int, address: android.location.Address?): String? {
         if (address == null) return null

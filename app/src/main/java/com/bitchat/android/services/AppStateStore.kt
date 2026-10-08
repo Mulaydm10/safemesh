@@ -285,7 +285,8 @@ object AppStateStore {
             aliases = persistence.aliases,
             displayName = persistence.displayName,
             message = msg,
-            isRead = persistence.isRead
+            isRead = persistence.isRead,
+            epoch = persistence.wipeEpoch
         )
         return synchronized(this) {
             reservedPrivateMessageIds.remove(msg.id)
@@ -386,7 +387,8 @@ object AppStateStore {
             aliases = aliases,
             displayName = displayName,
             isRead = isRead,
-            generation = privateConversationGeneration
+            generation = privateConversationGeneration,
+            wipeEpoch = conversationRepository?.currentWipeEpoch() ?: 0L
         )
     }
 
@@ -574,10 +576,15 @@ object AppStateStore {
         isRead: Boolean
     ): Boolean {
         val canonicalID = ContactDirectory.canonicalConversationId(conversationID)
-        val repository = conversationRepository ?: return false
-        val result = repository.setConversationReadAndWait(canonicalID, isRead)
+        val (repository, epoch) = synchronized(this) {
+            if (privateConversationWritesSuspended) return false
+            val repository = conversationRepository ?: return false
+            repository to repository.currentWipeEpoch()
+        }
+        val result = repository.setConversationReadAndWait(canonicalID, isRead, epoch)
         if (!result.success) return false
         synchronized(this) {
+            if (privateConversationWritesSuspended) return false
             val messageIDs = _privateMessages.value
                 .filterKeys { key ->
                     ContactDirectory.canonicalConversationId(key)
@@ -695,7 +702,10 @@ object AppStateStore {
     internal suspend fun restoreDeletedConversation(
         deletion: DeletedPrivateConversation
     ): Boolean {
-        val repository = conversationRepository ?: return false
+        val repository = synchronized(this) {
+            if (privateConversationWritesSuspended) return false
+            conversationRepository ?: return false
+        }
         val restoredDisplayName =
             ContactDirectory.resolve(deletion.conversationID).displayName
                 ?: deletion.displayName
@@ -705,12 +715,14 @@ object AppStateStore {
                 aliases = deletion.aliases,
                 displayName = restoredDisplayName,
                 messages = deletion.messages,
-                readMessageIDs = deletion.readMessageIDs
+                readMessageIDs = deletion.readMessageIDs,
+                epoch = deletion.wipeEpoch
             )
         ) {
             return false
         }
         synchronized(this) {
+            if (privateConversationWritesSuspended) return false
             seenMessageIds.removeAll(deletion.messageIDs)
             deletion.messages.forEach { message ->
                 addPrivateMessageLocked(
@@ -763,7 +775,8 @@ object AppStateStore {
                 message.id !in readIDs &&
                     message.sender != "system" &&
                     message.sender != _nickname.value
-            }
+            },
+            wipeEpoch = conversationRepository?.currentWipeEpoch() ?: 0L
         )
     }
 
@@ -1099,7 +1112,8 @@ private data class PendingPrivateMessagePersistence(
     val aliases: Set<String>,
     val displayName: String?,
     val isRead: Boolean,
-    val generation: Long
+    val generation: Long,
+    val wipeEpoch: Long
 )
 
 internal data class DeletedPrivateConversation(
@@ -1111,7 +1125,9 @@ internal data class DeletedPrivateConversation(
     val unreadMessageCount: Int,
     val wasPinned: Boolean = false,
     val wasMuted: Boolean = false,
-    val draft: String? = null
+    val draft: String? = null,
+    // An Undo snapshot taken before a panic wipe must never be written back after it.
+    val wipeEpoch: Long = 0L
 ) {
     val messageIDs: Set<String> = messages.mapTo(linkedSetOf(), BitchatMessage::id)
 }
