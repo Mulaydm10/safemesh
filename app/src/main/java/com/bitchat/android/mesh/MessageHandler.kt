@@ -486,8 +486,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
 
             // Fallback: plain text
             val text = String(packet.payload, Charsets.UTF_8)
-            val group = if (com.bitchat.android.ui.GroupEnvelope.isEnvelope(text)) {
-                com.bitchat.android.ui.GroupKeyring.open(text) ?: return
+            val group = if (GroupEnvelope.isEnvelope(text)) {
+                GroupKeyring.open(text) ?: return
             } else null
             val message = BitchatMessage(
                 id = PacketIdUtil.computeIdHex(packet).uppercase(),

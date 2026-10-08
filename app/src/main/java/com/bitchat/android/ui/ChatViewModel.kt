@@ -1,5 +1,7 @@
 package com.bitchat.android.ui
 
+import com.bitchat.android.mesh.GroupEnvelope
+import com.bitchat.android.mesh.GroupKeyring
 import android.app.Application
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat

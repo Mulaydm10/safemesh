@@ -1,5 +1,6 @@
 package com.bitchat.android.ui
 
+import com.bitchat.android.mesh.GroupKeyring
 import com.bitchat.android.geohash.ChannelID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch

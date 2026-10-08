@@ -1,4 +1,4 @@
-package com.bitchat.android.ui
+package com.bitchat.android.mesh
 
 import java.security.MessageDigest
 import java.security.SecureRandom
