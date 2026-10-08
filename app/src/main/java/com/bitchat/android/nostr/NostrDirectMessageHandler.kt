@@ -208,8 +208,9 @@ class NostrDirectMessageHandler(
                 // Properly handle encrypted file transfer
                 val file = BitchatFilePacket.decode(payload.data)
                 if (file != null) {
+                    val savedPath = com.bitchat.android.features.file.FileUtils
+                        .saveIncomingFileWithinQuota(application, file, "nostr:$senderPubkey") ?: return
                     val uniqueMsgId = java.util.UUID.randomUUID().toString().uppercase()
-                    val savedPath = com.bitchat.android.features.file.FileUtils.saveIncomingFile(application, file)
                     val message = BitchatMessage(
                         id = uniqueMsgId,
                         sender = senderNickname,

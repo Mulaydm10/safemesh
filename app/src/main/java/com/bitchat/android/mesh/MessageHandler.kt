@@ -128,8 +128,9 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     val file = com.bitchat.android.model.BitchatFilePacket.decode(noisePayload.data)
                     if (file != null) {
                         Log.d(TAG, "Encrypted file from $peerID: ${file.fileSize} bytes")
+                        val savedPath = com.bitchat.android.features.file.FileUtils
+                            .saveIncomingFileWithinQuota(appContext, file, peerID) ?: return false
                         val uniqueMsgId = java.util.UUID.randomUUID().toString().uppercase()
-                        val savedPath = com.bitchat.android.features.file.FileUtils.saveIncomingFile(appContext, file)
                         val message = BitchatMessage(
                             id = uniqueMsgId,
                             sender = delegate?.getPeerNickname(peerID) ?: "Unknown",
@@ -466,8 +467,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
             val isFileTransfer = com.bitchat.android.protocol.MessageType.fromValue(packet.type) == com.bitchat.android.protocol.MessageType.FILE_TRANSFER
             val file = com.bitchat.android.model.BitchatFilePacket.decode(packet.payload)
             if (file != null) {
-
-                val savedPath = com.bitchat.android.features.file.FileUtils.saveIncomingFile(appContext, file)
+                val savedPath = com.bitchat.android.features.file.FileUtils
+                    .saveIncomingFileWithinQuota(appContext, file, peerID) ?: return
                 val message = BitchatMessage(
                     id = PacketIdUtil.computeIdHex(packet).uppercase(),
                     sender = delegate?.getPeerNickname(peerID) ?: "unknown",
@@ -530,8 +531,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
             // Try file packet first (voice, image, etc.) and log outcome for FILE_TRANSFER
             val file = com.bitchat.android.model.BitchatFilePacket.decode(packet.payload)
             if (file != null) {
-
-                val savedPath = com.bitchat.android.features.file.FileUtils.saveIncomingFile(appContext, file)
+                val savedPath = com.bitchat.android.features.file.FileUtils
+                    .saveIncomingFileWithinQuota(appContext, file, peerID) ?: return
                 val message = BitchatMessage(
                     id = java.util.UUID.randomUUID().toString().uppercase(),
                     sender = delegate?.getPeerNickname(peerID) ?: "unknown",

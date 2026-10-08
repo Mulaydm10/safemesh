@@ -189,6 +189,28 @@ object FileUtils {
         )
     }
 
+    fun incomingMediaDirs(context: Context): List<java.io.File> = listOf(
+        java.io.File(context.cacheDir, "images/incoming"),
+        java.io.File(context.cacheDir, "files/incoming")
+    )
+
+    /**
+     * Save an incoming file from a remote sender if it fits [IncomingFileQuota];
+     * returns the absolute path, or null when the file was refused.
+     */
+    fun saveIncomingFileWithinQuota(
+        context: Context,
+        file: com.bitchat.android.model.BitchatFilePacket,
+        senderKey: String,
+        quota: IncomingFileQuota = IncomingFileQuota.shared
+    ): String? {
+        if (!quota.admit(senderKey, file.content.size.toLong(), incomingMediaDirs(context))) {
+            Log.w(TAG, "Refusing incoming file over quota (${file.content.size} bytes)")
+            return null
+        }
+        return saveIncomingFile(context, file)
+    }
+
     /**
      * Save an incoming file packet to app storage and return absolute path.
      * Mirrors existing behavior used in MessageHandler (preserves names and folders).
