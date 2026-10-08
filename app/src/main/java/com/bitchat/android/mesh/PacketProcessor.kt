@@ -5,7 +5,7 @@ import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.model.RoutedPacket
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.actor
 
 /**
@@ -20,6 +20,8 @@ class PacketProcessor(private val myPeerID: String) {
     
     companion object {
         private const val TAG = "PacketProcessor"
+        internal const val MAX_PEER_ACTORS = 256
+        internal const val PEER_ACTOR_QUEUE_CAPACITY = 512
     }
     
     // Delegate for callbacks
@@ -37,23 +39,28 @@ class PacketProcessor(private val myPeerID: String) {
     // Coroutines
     private val processorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
-    // Per-peer actors to serialize packet processing
-    // Each peer gets its own actor that processes packets sequentially
-    // This prevents race conditions in session management
-    private val peerActors = mutableMapOf<String, CompletableDeferred<Unit>>()
-    
+    // Per-peer actors serialize packet processing so session state for one peer is never
+    // touched concurrently. Peer IDs are unauthenticated until validatePacketSecurity runs
+    // inside the actor, so both the number of actors and each actor's queue are bounded.
     @OptIn(ObsoleteCoroutinesApi::class)
-    private fun getOrCreateActorForPeer(peerID: String) = processorScope.actor<RoutedPacket>(
-        capacity = Channel.UNLIMITED
+    private fun createActorForPeer() = processorScope.actor<RoutedPacket>(
+        capacity = PEER_ACTOR_QUEUE_CAPACITY
     ) {
         for (packet in channel) {
             handleReceivedPacket(packet)
         }
     }
-    
-    // Cache actors to reuse them
-    private val actors = mutableMapOf<String, kotlinx.coroutines.channels.SendChannel<RoutedPacket>>()
-    
+
+    // Access-ordered LRU; guarded by its own monitor because BLE binder callbacks call in concurrently.
+    private val actors = object : LinkedHashMap<String, SendChannel<RoutedPacket>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SendChannel<RoutedPacket>>): Boolean {
+            if (size <= MAX_PEER_ACTORS) return false
+            // close() lets already-queued packets drain, then the actor coroutine ends
+            eldest.value.close()
+            return true
+        }
+    }
+
     init {
         // Set up the packet relay manager delegate immediately
         setupRelayManager()
@@ -71,21 +78,22 @@ class PacketProcessor(private val myPeerID: String) {
             return
         }
         
-        // Get or create actor for this peer
-        val actor = actors.getOrPut(peerID) { getOrCreateActorForPeer(peerID) }
-        
-        // Send packet to peer's dedicated actor for serialized processing
-        processorScope.launch {
-            try {
-                actor.send(routed)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to send packet to actor for ${formatPeerForLog(peerID)}: ${e.message}")
-                // Fallback to direct processing if actor fails
-                handleReceivedPacket(routed)
+        val result = synchronized(actors) {
+            val first = actors.getOrPut(peerID) { createActorForPeer() }.trySend(routed)
+            if (!first.isClosed) {
+                first
+            } else {
+                // Actor died (e.g. a handler threw); replace it once
+                createActorForPeer().also { actors[peerID] = it }.trySend(routed)
             }
         }
+        if (result.isFailure) {
+            Log.w(TAG, "Dropping packet from ${formatPeerForLog(peerID)}: peer queue full or closed")
+        }
     }
-    
+
+    internal fun activePeerActorCount(): Int = synchronized(actors) { actors.size }
+
     /**
      * Set up the packet relay manager with its delegate
      */
@@ -245,12 +253,13 @@ class PacketProcessor(private val myPeerID: String) {
         return buildString {
             appendLine("=== Packet Processor Debug Info ===")
             appendLine("Processor Scope Active: ${processorScope.isActive}")
-            appendLine("Active Peer Actors: ${actors.size}")
+            val peerIDs = synchronized(actors) { actors.keys.toList() }
+            appendLine("Active Peer Actors: ${peerIDs.size}")
             appendLine("My Peer ID: $myPeerID")
             
-            if (actors.isNotEmpty()) {
+            if (peerIDs.isNotEmpty()) {
                 appendLine("Peer Actors:")
-                actors.keys.forEach { peerID ->
+                peerIDs.forEach { peerID ->
                     appendLine("  - $peerID")
                 }
             }
@@ -261,13 +270,11 @@ class PacketProcessor(private val myPeerID: String) {
      * Shutdown the processor and all peer actors
      */
     fun shutdown() {
-        Log.d(TAG, "Shutting down PacketProcessor and ${actors.size} peer actors")
-        
-        // Close all peer actors gracefully
-        actors.values.forEach { actor ->
-            actor.close()
+        synchronized(actors) {
+            Log.d(TAG, "Shutting down PacketProcessor and ${actors.size} peer actors")
+            actors.values.forEach { actor -> actor.close() }
+            actors.clear()
         }
-        actors.clear()
         
         // Shutdown the relay manager
         packetRelayManager.shutdown()
