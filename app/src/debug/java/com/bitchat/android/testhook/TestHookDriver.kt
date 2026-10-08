@@ -370,7 +370,11 @@ object TestHookDriver {
         val timeoutMs = intent.getLongExtra("timeout_ms", DEFAULT_FILE_TIMEOUT_MS)
         val mesh = mesh(context)
 
-        val file = File(path)
+        val fixturesDir = File(context.cacheDir, "fixtures").canonicalFile
+        val file = File(path).canonicalFile
+        if (file.parentFile != fixturesDir) {
+            return err("file_send", "path must be a file directly inside cache/fixtures")
+        }
         if (!file.isFile) return err("file_send", "file not found: $path")
         val content = withContext(Dispatchers.IO) { file.readBytes() }
         if (content.size.toLong() > AppConstants.Media.MAX_FILE_SIZE_BYTES) {

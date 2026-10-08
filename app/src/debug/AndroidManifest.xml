@@ -5,11 +5,13 @@
     <application>
         <!-- Debug-only ADB test hook. Drives mesh operations (scan, connect,
              handshake, DMs, files, broadcast, raw packets) from host scripts.
-             Exported intentionally so `adb shell am broadcast` can reach it;
+             Exported so `adb shell am broadcast` can reach it, but guarded by
+             DUMP (held by the shell UID, not grantable to third-party apps);
              never shipped in release builds. -->
         <receiver
             android:name="com.bitchat.android.testhook.TestHookReceiver"
             android:exported="true"
+            android:permission="android.permission.DUMP"
             tools:ignore="ExportedReceiver">
             <intent-filter>
                 <action android:name="com.bitchat.droid.TEST_HOOK" />
