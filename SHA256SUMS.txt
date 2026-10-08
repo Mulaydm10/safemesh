@@ -1,0 +1,4 @@
+1fb3cae5cbb980bc65ed78b1031662de1f989b42cd5ad23f9a64e091e703c66b  SafeMesh-arm64.apk
+71f219cf930788040405ef44c2cbec9428b263619ba1cb7657a2a76e284ee0a7  SafeMesh-universal.apk
+Signing certificate SHA-256: 9d8f870b01fe50e274ca65e90cde95f8966602e1ec6e0ab5d66dd570db2bfbbb
+Short code shown in app: 9D8F 870B 01FE 50E2
