@@ -44,6 +44,7 @@ class UniversalApkManager(
         private const val METADATA_FILE_NAME = "universal_apk_info.json"
         private const val PROGRESS_FILE_NAME = "download_progress.json"
         private const val APK_FILE_PREFIX = "safemesh-universal-"
+        private const val LEGACY_APK_FILE_PREFIX = "bitchat-universal-"
         private const val TEMP_FILE_NAME = "download_temp.apk"
         private const val ROUTE_READY_TIMEOUT_MILLIS = 60_000L
 
@@ -736,7 +737,9 @@ class UniversalApkManager(
             // Keep an already cached artifact if it is the same version or
             // newer. Otherwise prefer the running build so sharing cannot
             // silently downgrade recipients to an older downloadable release.
-            if (cachedInfo != null &&
+            val staleInstalledCopy = cachedInfo?.source == ApkSource.INSTALLED &&
+                cachedInfo.size != installedApk.length()
+            if (cachedInfo != null && !staleInstalledCopy &&
                 !AppVersion.isNewer(cachedInfo.version, installedVersion)
             ) {
                 return cachedInfo
@@ -906,7 +909,7 @@ class UniversalApkManager(
         try {
             cacheDir.listFiles()?.forEach { file ->
                 if (file != except &&
-                    file.name.startsWith(APK_FILE_PREFIX) &&
+                    (file.name.startsWith(APK_FILE_PREFIX) || file.name.startsWith(LEGACY_APK_FILE_PREFIX)) &&
                     file.name.endsWith(".apk")
                 ) {
                     file.delete()
