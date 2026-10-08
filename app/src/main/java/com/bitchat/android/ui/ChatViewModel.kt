@@ -1726,12 +1726,6 @@ class ChatViewModel(
         }
     }
 
-    fun startGeohashDMByShortId(shortId: String) {
-        geohashViewModel.startGeohashDMByShortId(shortId) { convKey ->
-            showPrivateChatSheet(convKey)
-        }
-    }
-
     fun selectLocationChannel(channel: com.bitchat.android.geohash.ChannelID) {
         geohashViewModel.selectLocationChannel(channel)
     }
