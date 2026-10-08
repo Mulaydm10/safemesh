@@ -38,6 +38,7 @@ import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.OutlinedButton
 import com.bitchat.watch.mesh.WearMeshService
 import com.bitchat.watch.notification.WearNotificationCoordinator
+import com.bitchat.watch.notification.WearNotificationLaunchGuard
 import com.bitchat.watch.service.WearMeshForegroundService
 import com.bitchat.watch.ui.ChatScreen
 import com.bitchat.watch.ui.DmScreen
@@ -181,15 +182,17 @@ class MainActivity : ComponentActivity() {
         val peerID = privateMessagePeerFromIntent(intent)
         intent?.removeExtra(WearNotificationCoordinator.EXTRA_OPEN_DM)
         intent?.removeExtra(WearNotificationCoordinator.EXTRA_PEER_ID)
+        intent?.removeExtra(WearNotificationLaunchGuard.EXTRA_LAUNCH_TOKEN)
         return peerID
     }
 
     private fun privateMessagePeerFromIntent(intent: Intent?): String? {
+        if (!WearNotificationLaunchGuard.isTrusted(intent)) return null
         if (intent?.getBooleanExtra(WearNotificationCoordinator.EXTRA_OPEN_DM, false) != true) {
             return null
         }
         return intent.getStringExtra(WearNotificationCoordinator.EXTRA_PEER_ID)
-            ?.takeIf { it.isNotBlank() }
+            ?.takeIf(WearNotificationLaunchGuard::isValidPeerID)
     }
 
     private fun requestLaunch(target: WearLaunchTarget) {

@@ -223,7 +223,7 @@ class NotificationManager(
         val messageCount = notifications.size
 
         // Create intent to open the specific private chat
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = NotificationLaunchGuard.notificationIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_OPEN_PRIVATE_CHAT, true)
             putExtra(EXTRA_PEER_ID, senderPeerID)
@@ -376,7 +376,7 @@ class NotificationManager(
     }
 
     fun showVerificationNotification(title: String, body: String, peerID: String? = null) {
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = NotificationLaunchGuard.notificationIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (peerID != null) {
                 putExtra(EXTRA_OPEN_PRIVATE_CHAT, true)
@@ -553,7 +553,7 @@ class NotificationManager(
         val firstMessageCount = notifications.count { it.isFirstMessage }
 
         // Create intent to open the specific geohash chat
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = NotificationLaunchGuard.notificationIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_OPEN_GEOHASH_CHAT, true)
             putExtra(EXTRA_GEOHASH, geohash)
