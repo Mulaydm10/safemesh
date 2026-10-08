@@ -33,7 +33,16 @@ class NostrDirectMessageHandler(
     private val dataManager: com.bitchat.android.ui.DataManager,
     private val seenStoreProvider: () -> SeenMessageStore = {
         SeenMessageStore.getInstance(application)
-    }
+    },
+    private val isFavoritedByUs: (senderPubkey: String) -> Boolean = ::senderIsFavoritedByUs,
+    private val sendDeliveryAck: (messageID: String, toPubkey: String, from: NostrIdentity) -> Unit =
+        { messageID, toPubkey, from ->
+            NostrTransport.getInstance(application).sendDeliveryAckGeohash(messageID, toPubkey, from)
+        },
+    private val sendReadReceipt: (messageID: String, toPubkey: String, from: NostrIdentity) -> Unit =
+        { messageID, toPubkey, from ->
+            NostrTransport.getInstance(application).sendReadReceiptGeohash(messageID, toPubkey, from)
+        }
 ) {
     companion object { private const val TAG = "NostrDirectMessageHandler" }
 
@@ -141,9 +150,11 @@ class NostrDirectMessageHandler(
                         senderPubkey
                     )
                     if (!admitted) return
-                    if (!seenStore.hasDelivered(pm.messageID)) {
-                        val nostrTransport = NostrTransport.getInstance(application)
-                        nostrTransport.sendDeliveryAckGeohash(pm.messageID, senderPubkey, recipientIdentity)
+                    if (
+                        !seenStore.hasDelivered(pm.messageID) &&
+                        shouldSendReceipts(senderPubkey, conversationID)
+                    ) {
+                        sendDeliveryAck(pm.messageID, senderPubkey, recipientIdentity)
                         seenStore.markDelivered(pm.messageID)
                     }
                     return
@@ -174,17 +185,20 @@ class NostrDirectMessageHandler(
                 }
                 if (!admitted) return
 
-                if (!seenStore.hasDelivered(pm.messageID)) {
-                    val nostrTransport = NostrTransport.getInstance(application)
-                    nostrTransport.sendDeliveryAckGeohash(pm.messageID, senderPubkey, recipientIdentity)
+                // Receipts reveal when this device is online and reading, so only
+                // acknowledge senders the user has a relationship with.
+                val sendReceipts = shouldSendReceipts(senderPubkey, conversationID)
+                if (sendReceipts && !seenStore.hasDelivered(pm.messageID)) {
+                    sendDeliveryAck(pm.messageID, senderPubkey, recipientIdentity)
                     seenStore.markDelivered(pm.messageID)
                 }
 
                 if (isViewing && !suppressUnread) {
-                    val nostrTransport = NostrTransport.getInstance(application)
-                    nostrTransport.sendReadReceiptGeohash(pm.messageID, senderPubkey, recipientIdentity)
                     seenStore.markReadLocally(pm.messageID)
-                    seenStore.markReadReceiptSent(pm.messageID)
+                    if (sendReceipts) {
+                        sendReadReceipt(pm.messageID, senderPubkey, recipientIdentity)
+                        seenStore.markReadReceiptSent(pm.messageID)
+                    }
                 }
             }
             NoisePayloadType.DELIVERED -> {
@@ -306,6 +320,19 @@ class NostrDirectMessageHandler(
         }
     }
 
+    private fun shouldSendReceipts(senderPubkey: String, conversationID: String): Boolean {
+        return userHasSentIn(conversationID) || isFavoritedByUs(senderPubkey)
+    }
+
+    private fun userHasSentIn(conversationID: String): Boolean {
+        val messages = state.getPrivateChatsValue()[conversationID].orEmpty()
+        return messages.any { message ->
+            val senderPeerID = message.senderPeerID ?: return@any false
+            message.sender != "system" &&
+                ContactDirectory.canonicalConversationId(senderPeerID) != conversationID
+        }
+    }
+
     private fun base64URLDecode(input: String): ByteArray? {
         return try {
             val padded = input.replace("-", "+")
@@ -319,5 +346,18 @@ class NostrDirectMessageHandler(
             Log.e(TAG, "Failed to decode base64url: ${e.message}")
             null
         }
+    }
+}
+
+private fun senderIsFavoritedByUs(senderPubkey: String): Boolean {
+    return try {
+        val favorites = FavoritesPersistenceService.shared
+        val noiseKey = ContactIdentityResolver.npubFromHex(senderPubkey)
+            ?.let { favorites.findNoiseKey(it) }
+            ?: favorites.findNoiseKey(senderPubkey)
+            ?: return false
+        favorites.getFavoriteStatus(noiseKey)?.isFavorite == true
+    } catch (_: Exception) {
+        false
     }
 }
