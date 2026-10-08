@@ -654,7 +654,8 @@ fun ChatHeaderContent(
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
     onSosClick: () -> Unit = {},
-    onGroupsClick: () -> Unit = {}
+    onGroupsClick: () -> Unit = {},
+    onShareClick: () -> Unit = {}
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
@@ -680,6 +681,7 @@ fun ChatHeaderContent(
                 onLocationNotesClick = onLocationNotesClick,
                 onSosClick = onSosClick,
                 onGroupsClick = onGroupsClick,
+                onShareClick = onShareClick,
                 viewModel = viewModel
             )
         }
@@ -722,6 +724,7 @@ private fun MainHeader(
     onLocationNotesClick: () -> Unit,
     onSosClick: () -> Unit,
     onGroupsClick: () -> Unit,
+    onShareClick: () -> Unit,
     viewModel: ChatViewModel
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -801,6 +804,18 @@ private fun MainHeader(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
+                    HeaderIconButton(
+                        onClick = onShareClick,
+                        contentDescription = "Share SafeMesh"
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = "Share SafeMesh",
+                            modifier = Modifier.size(HeaderIconSize),
+                            tint = colorScheme.primary
+                        )
+                    }
+
                     androidx.compose.material3.TextButton(
                         onClick = onGroupsClick,
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)

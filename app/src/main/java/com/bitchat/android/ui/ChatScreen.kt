@@ -47,6 +47,7 @@ import com.bitchat.android.nostr.LocationNotesManager
 import com.bitchat.android.nostr.NearbyNotesController
 import com.bitchat.android.ui.media.FullScreenImageViewer
 import com.bitchat.android.ui.theme.BitchatMotion
+import kotlinx.coroutines.launch
 
 /**
  * Main ChatScreen - REFACTORED to use component-based architecture
@@ -91,6 +92,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
     var showLocationChannelsSheet by remember { mutableStateOf(false) }
     var showSosDialog by remember { mutableStateOf(false) }
     var showGroupDialog by remember { mutableStateOf(false) }
+    var showShareDialog by remember { mutableStateOf(false) }
+    val shareScope = rememberCoroutineScope()
     var showLocationNotesSheet by remember { mutableStateOf(false) }
     var showUserSheet by remember { mutableStateOf(false) }
     var selectedUserForSheet by remember { mutableStateOf("") }
@@ -466,7 +469,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 showLocationNotesSheet = true
             },
             onSosClick = { showSosDialog = true },
-            onGroupsClick = { showGroupDialog = true }
+            onGroupsClick = { showGroupDialog = true },
+            onShareClick = { showShareDialog = true }
         )
 
         // Scroll-to-bottom floating button
@@ -526,6 +530,23 @@ fun ChatScreen(viewModel: ChatViewModel) {
             onDismiss = { showSosDialog = false }
         )
     }
+    if (showShareDialog) {
+        ShareAppDialog(
+            onShare = { method ->
+                showShareDialog = false
+                shareScope.launch {
+                    val apk = ShareApp.prepareApk(context)
+                    if (apk == null) {
+                        android.widget.Toast.makeText(context, "Could not prepare the app file", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        ShareApp.share(context, apk, method)
+                    }
+                }
+            },
+            onDismiss = { showShareDialog = false }
+        )
+    }
+
     if (showGroupDialog) {
         GroupDialog(
             onJoin = { name, password ->
@@ -786,7 +807,8 @@ private fun ChatFloatingHeader(
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
     onSosClick: () -> Unit = {},
-    onGroupsClick: () -> Unit = {}
+    onGroupsClick: () -> Unit = {},
+    onShareClick: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val locationManager = remember { com.bitchat.android.geohash.LocationChannelManager.getInstance(context) }
@@ -833,7 +855,8 @@ private fun ChatFloatingHeader(
                 onLocationNotesClick()
             },
             onSosClick = onSosClick,
-            onGroupsClick = onGroupsClick
+            onGroupsClick = onGroupsClick,
+            onShareClick = onShareClick
         )
     }
 }
