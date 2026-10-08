@@ -7,6 +7,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -109,5 +110,74 @@ class ConversationRepositoryTest {
         assertTrue(snapshot.get().chats.isEmpty())
         assertTrue(snapshot.get().readMessageIDs.isEmpty())
         assertTrue(snapshot.get().deletedMessageIDs.isEmpty())
+    }
+    @Test
+    fun `write decided before panic is dropped when it reaches the writer after the wipe`() {
+        repository = ConversationRepository(
+            context = context,
+            dispatcher = dispatcher,
+            databaseName = databaseName,
+            storageCipher = InMemoryConversationStorageCipher()
+        )
+        val epochBeforePanic = repository.currentWipeEpoch()
+
+        assertTrue(runBlocking { repository.clearAllAndWait() })
+
+        val stale = BitchatMessage(
+            id = "in-flight-at-panic",
+            sender = "alice",
+            content = "must not survive panic",
+            timestamp = Date(100L),
+            isPrivate = true
+        )
+        assertFalse(
+            runBlocking {
+                repository.upsertMessageAndWait(
+                    conversationID = "peer-alice",
+                    aliases = setOf("peer-alice"),
+                    displayName = "alice",
+                    message = stale,
+                    isRead = false,
+                    epoch = epochBeforePanic
+                )
+            }
+        )
+        assertFalse(
+            runBlocking {
+                repository.restoreConversationAndWait(
+                    conversationID = "peer-alice",
+                    aliases = setOf("peer-alice"),
+                    displayName = "alice",
+                    messages = listOf(stale),
+                    readMessageIDs = emptySet(),
+                    epoch = epochBeforePanic
+                )
+            }
+        )
+        repository.mergeAliases("peer-alice", setOf("peer-alice-old"), epochBeforePanic)
+        repository.updateConversationIdentity(
+            "peer-alice",
+            setOf("peer-alice"),
+            "alice",
+            epochBeforePanic
+        )
+
+        val snapshot = AtomicReference<PersistedConversationSnapshot>()
+        repository.reload(snapshot::set)
+        runBlocking { repository.awaitPendingWrites() }
+        assertTrue(snapshot.get().chats.isEmpty())
+
+        val fresh = stale.copy(id = "after-panic", content = "new identity")
+        assertTrue(
+            runBlocking {
+                repository.upsertMessageAndWait(
+                    conversationID = "peer-bob",
+                    aliases = setOf("peer-bob"),
+                    displayName = "bob",
+                    message = fresh,
+                    isRead = false
+                )
+            }
+        )
     }
 }

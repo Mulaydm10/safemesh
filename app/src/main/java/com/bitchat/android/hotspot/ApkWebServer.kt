@@ -6,20 +6,89 @@ import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.io.FileInputStream
+import java.net.InetAddress
+import java.net.NetworkInterface
 
 /**
  * Lightweight HTTP server for serving the universal APK over Wi-Fi P2P hotspot.
  * Based on NanoHTTPD.
+ *
+ * Listens only on the P2P group owner address and answers only clients inside the
+ * group subnet, so the landing page is not reachable over any other network the
+ * device is on (infrastructure Wi-Fi, mobile data IPv6).
  */
 class ApkWebServer(
     private val context: Context,
     private val apkFile: File,
+    private val groupOwnerAddress: String,
+    private val apkSha256: String?,
     private val port: Int = DEFAULT_PORT
-) : NanoHTTPD(port) {
+) : NanoHTTPD(requireIpv4Literal(groupOwnerAddress), port) {
 
     companion object {
         private const val TAG = "ApkWebServer"
         const val DEFAULT_PORT = 9999
+        internal const val DEFAULT_PREFIX_LENGTH = 24
+        internal const val MAX_CONCURRENT_CONNECTIONS = 8
+
+        internal fun requireIpv4Literal(address: String): String {
+            val octets = address.split('.')
+            require(
+                octets.size == 4 &&
+                    octets.all { it.toIntOrNull() in 0..255 } &&
+                    octets[0].toInt() != 0
+            ) {
+                "Hotspot address must be a concrete IPv4 literal"
+            }
+            return address
+        }
+
+        internal fun isInSubnet(remote: InetAddress, local: InetAddress, prefixLength: Int): Boolean {
+            val r = remote.address
+            val l = local.address
+            if (r.size != l.size || prefixLength !in 0..(l.size * 8)) return false
+            val fullBytes = prefixLength / 8
+            for (i in 0 until fullBytes) {
+                if (r[i] != l[i]) return false
+            }
+            val remainingBits = prefixLength % 8
+            if (remainingBits == 0) return true
+            val mask = (0xFF shl (8 - remainingBits)) and 0xFF
+            return (r[fullBytes].toInt() and mask) == (l[fullBytes].toInt() and mask)
+        }
+    }
+
+    private val localAddress: InetAddress = InetAddress.getByName(groupOwnerAddress)
+
+    private val groupPrefixLength: Int by lazy {
+        runCatching {
+            NetworkInterface.getByInetAddress(localAddress)
+                ?.interfaceAddresses
+                ?.firstOrNull { it.address == localAddress }
+                ?.networkPrefixLength
+                ?.toInt()
+        }.getOrNull() ?: DEFAULT_PREFIX_LENGTH
+    }
+
+    init {
+        setAsyncRunner(BoundedAsyncRunner(MAX_CONCURRENT_CONNECTIONS))
+    }
+
+    /** Caps simultaneous connections so a client cannot spawn unbounded threads. */
+    private class BoundedAsyncRunner(private val maxConnections: Int) : NanoHTTPD.DefaultAsyncRunner() {
+        override fun exec(clientHandler: NanoHTTPD.ClientHandler) {
+            if (running.size >= maxConnections) {
+                clientHandler.close()
+                return
+            }
+            super.exec(clientHandler)
+        }
+    }
+
+    private fun isGroupClient(remoteIp: String?): Boolean {
+        if (remoteIp.isNullOrEmpty()) return false
+        val remote = runCatching { InetAddress.getByName(remoteIp) }.getOrNull() ?: return false
+        return isInSubnet(remote, localAddress, groupPrefixLength)
     }
 
     private val appVersion: String by lazy {
@@ -41,7 +110,11 @@ class ApkWebServer(
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
 
-        Log.d(TAG, "Request: ${session.method} $uri from ${session.remoteIpAddress}")
+        Log.d(TAG, "Request: ${session.method} $uri")
+
+        if (!isGroupClient(session.remoteIpAddress)) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden")
+        }
 
         return when {
             uri == "/safemesh.apk" -> {
@@ -110,8 +183,8 @@ class ApkWebServer(
      */
     private fun generateLandingPageHtml(): String {
         val apkSizeMb = apkFile.length() / 1024 / 1024
-        val apkSha256 = runCatching { AppIntegrity.fileSha256(apkFile) }.getOrDefault("unavailable")
         val officialCode = AppIntegrity.officialCertSha256?.let { AppIntegrity.shortCode(it) } ?: "not configured"
+        val apkCode = apkSha256?.let { AppIntegrity.shortCode(it) } ?: "unavailable"
 
         return """
 <!DOCTYPE html>
@@ -274,11 +347,17 @@ class ApkWebServer(
             </div>
         </div>
 
-        <div class="instructions">
-            <h3>🔐 Verify</h3>
-            <p>Official signing code: <b>${officialCode}</b></p>
-            <p style="word-break:break-all">File SHA-256: <code>${apkSha256}</code></p>
-            <p>After installing, open SafeMesh → Share → Verify. It must say "official SafeMesh" with the same code.</p>
+        <div class="warning">
+            <strong>⚠️ Check the file before you install it</strong>
+            Anyone on this Wi-Fi can change this page and the file, so the codes here prove nothing on their own.
+            Compare them with the codes on the sharer's phone screen, not with this page.
+            <p style="margin-top:10px">Signing code: <b>${officialCode}</b></p>
+            <p style="word-break:break-all">File code: <code>${apkCode}</code></p>
+            <ul style="margin:10px 0 0 18px">
+                <li>If you already have a SafeMesh you trust: open it, go to Share, tap "Check an APK file" and pick the downloaded file. Install only if it says "Real SafeMesh" and its file code matches the sharer's screen.</li>
+                <li>If this is your first SafeMesh: this download cannot be checked. Ask the sharer to send it by Bluetooth / Quick Share instead.</li>
+                <li>Once installed, a fake app can claim to be "official SafeMesh" too. Don't treat that message as proof.</li>
+            </ul>
         </div>
 
         <a href="/safemesh.apk" class="download-button">
@@ -290,6 +369,7 @@ class ApkWebServer(
             <ol>
                 <li>Tap the download button above</li>
                 <li>Wait for the download to complete</li>
+                <li>Check the file as described above</li>
                 <li>Open the downloaded APK file</li>
                 <li>If prompted, enable "Install from unknown sources" for your browser</li>
                 <li>Follow the installation prompts</li>
@@ -297,8 +377,8 @@ class ApkWebServer(
         </div>
 
         <div class="warning">
-            <strong>⚠️ Note:</strong>
-            If you already have SafeMesh installed, you may need to uninstall it first before installing this version. Make sure to backup your data if needed.
+            <strong>⚠️ Already have SafeMesh?</strong>
+            Do not uninstall it to make this file install. A real update installs over your current app. If Android refuses to install it, the file is probably fake: delete it.
         </div>
     </div>
 </body>
@@ -312,7 +392,7 @@ class ApkWebServer(
     fun startServer() {
         try {
             start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-            Log.d(TAG, "Web server started on port $port")
+            Log.d(TAG, "Web server started on the hotspot interface, port $port")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start web server", e)
             throw e

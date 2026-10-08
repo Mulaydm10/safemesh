@@ -206,28 +206,24 @@ class PrivateChatManager(
             return
         }
 
-        Log.d(TAG, "toggleFavorite called for peerID: $peerID, fingerprint: $fingerprint")
+        Log.d(TAG, "toggleFavorite called")
 
         val wasFavorite = dataManager.isFavorite(fingerprint!!)
         Log.d(TAG, "Current favorite status: $wasFavorite")
 
-        val currentFavorites = state.getFavoritePeersValue()
-        Log.d(TAG, "Current UI state favorites: $currentFavorites")
-
         if (wasFavorite) {
             dataManager.removeFavorite(fingerprint!!)
-            Log.d(TAG, "Removed from favorites: $fingerprint")
+            Log.d(TAG, "Removed from favorites")
         } else {
             dataManager.addFavorite(fingerprint!!)
-            Log.d(TAG, "Added to favorites: $fingerprint")
+            Log.d(TAG, "Added to favorites")
         }
 
         // Always update state to trigger UI refresh - create new set to ensure change detection
         val newFavorites = dataManager.favoritePeers.toSet()
         state.setFavoritePeers(newFavorites)
 
-        Log.d(TAG, "Force updated favorite peers state. New favorites: $newFavorites")
-        Log.d(TAG, "All peer fingerprints: ${fingerprintManager.getAllPeerFingerprints()}")
+        Log.d(TAG, "Force updated favorite peers state (${newFavorites.size} favorites)")
     }
 
 
@@ -241,7 +237,7 @@ class PrivateChatManager(
             }
 
         if (fingerprint != null && dataManager.isFavorite(fingerprint)) {
-            Log.d(TAG, "isFavorite check: peerID=$peerID, fingerprint=$fingerprint, result=true")
+            Log.d(TAG, "isFavorite check: result=true")
             return true
         }
 
@@ -250,7 +246,7 @@ class PrivateChatManager(
         } catch (_: Exception) {
             false
         }
-        Log.d(TAG, "isFavorite check: peerID=$peerID, fingerprint=$fingerprint, result=$persistedFavorite")
+        Log.d(TAG, "isFavorite check: result=$persistedFavorite")
         return persistedFavorite
     }
 

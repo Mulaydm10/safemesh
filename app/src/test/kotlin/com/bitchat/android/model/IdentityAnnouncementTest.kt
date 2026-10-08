@@ -88,6 +88,43 @@ class IdentityAnnouncementTest {
     }
 
     @Test
+    fun `oversized announcement payload is rejected before decoding`() {
+        val legacy = IdentityAnnouncement(nickname, noiseKey, signingKey).encode()!!
+        val padding = ByteArray(IdentityAnnouncement.MAX_ENCODED_SIZE) // zero-length type-0 TLVs
+
+        assertNull(IdentityAnnouncement.decode(legacy + padding))
+    }
+
+    @Test
+    fun `too many unknown TLVs are rejected`() {
+        val legacy = IdentityAnnouncement(nickname, noiseKey, signingKey).encode()!!
+        val atLimit = legacy + ByteArray(2 * IdentityAnnouncement.MAX_UNKNOWN_TLVS) { i ->
+            if (i % 2 == 0) 0x7F else 0x00
+        }
+
+        assertEquals(
+            IdentityAnnouncement.MAX_UNKNOWN_TLVS,
+            IdentityAnnouncement.decode(atLimit)!!.unknownTLVs.size
+        )
+        assertNull(IdentityAnnouncement.decode(atLimit + byteArrayOf(0x7F, 0x00)))
+    }
+
+    @Test
+    fun `unknown TLV bytes beyond the retention budget are rejected`() {
+        val legacy = IdentityAnnouncement(nickname, noiseKey, signingKey).encode()!!
+        val bigTLV = byteArrayOf(0x7F, 0xFF.toByte()) + ByteArray(255)
+        val wire = legacy + bigTLV + bigTLV + bigTLV + bigTLV + bigTLV
+
+        assertNull(IdentityAnnouncement.decode(wire))
+        assertNull(
+            IdentityAnnouncement(
+                nickname, noiseKey, signingKey,
+                unknownTLVs = List(5) { UnknownAnnouncementTLV(0x7F, ByteArray(255)) }
+            ).encode()
+        )
+    }
+
+    @Test
     fun `local announcement send advertises private media`() {
         val encoded = IdentityAnnouncement.forLocalPeer(nickname, noiseKey, signingKey).encode()!!
 

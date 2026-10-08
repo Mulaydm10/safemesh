@@ -264,15 +264,6 @@ class GeohashViewModel(
         }
     }
 
-    fun startGeohashDMByShortId(shortId: String, onStartPrivateChat: (String) -> Unit) {
-        val pubkey = repo.findPubkeyByShortId(shortId)
-        if (pubkey != null) {
-            startGeohashDM(pubkey, onStartPrivateChat)
-        } else {
-             Log.w(TAG, "Cannot start geohash DM: shortId '$shortId' not found in repo")
-        }
-    }
-
     fun getNostrKeyMapping(): Map<String, String> = repo.getNostrKeyMapping()
 
     fun blockUserInGeohash(targetNickname: String) {

@@ -110,17 +110,33 @@ class NostrEventDeduplicator(
     
     /**
      * Process a Nostr event with deduplication
-     * 
+     *
+     * Only events whose id and signature verify are recorded as seen. Otherwise a relay could
+     * send a forged copy carrying a genuine event's id and suppress the authentic copy that
+     * arrives later from other relays.
+     *
      * @param event The Nostr event to process
-     * @param processor Function to call if the event is not a duplicate
-     * @return true if the event was processed (not a duplicate), false if it was deduplicated
+     * @param processor Function to call if the event is authentic and not a duplicate
+     * @return true if the event was processed, false if it was a duplicate or failed verification
      */
     fun processEvent(event: NostrEvent, processor: (NostrEvent) -> Unit): Boolean {
-        return if (!isDuplicate(event.id)) {
-            processor(event)
-            true
-        } else {
-            false
+        if (recordDuplicateIfSeen(event.id)) return false
+        if (!event.isValidSignature()) return false
+        if (isDuplicate(event.id)) return false
+        processor(event)
+        return true
+    }
+
+    /**
+     * Returns true (and counts the duplicate) if the id is already cached, without inserting it.
+     */
+    private fun recordDuplicateIfSeen(eventId: String): Boolean {
+        synchronized(lruLock) {
+            val existingNode = nodeMap[eventId] ?: return false
+            totalChecks++
+            moveToFront(existingNode)
+            duplicateCount++
+            return true
         }
     }
     

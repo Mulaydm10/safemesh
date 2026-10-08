@@ -1,6 +1,7 @@
 package com.bitchat.android.nostr
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -14,6 +15,30 @@ class NostrEventDeduplicatorTest {
 
         assertEquals(false, deduplicator.isDuplicate("event-1"))
         assertEquals(true, deduplicator.isDuplicate("event-1"))
+    }
+
+    @Test
+    fun `forged copy with a genuine event id does not suppress the authentic event`() {
+        val deduplicator = NostrEventDeduplicator(maxCapacity = 10)
+        val authentic = signedEvent("authentic")
+        val forged = authentic.copy(content = "tampered")
+        val processed = mutableListOf<NostrEvent>()
+
+        assertFalse(deduplicator.processEvent(forged) { processed += it })
+        assertFalse(deduplicator.contains(authentic.id))
+        assertTrue(deduplicator.processEvent(authentic) { processed += it })
+        assertFalse(deduplicator.processEvent(authentic) { processed += it })
+
+        assertEquals(listOf(authentic), processed)
+    }
+
+    @Test
+    fun `unsigned event is never processed or cached`() {
+        val deduplicator = NostrEventDeduplicator(maxCapacity = 10)
+        val unsigned = signedEvent("unsigned").copy(sig = null)
+
+        assertFalse(deduplicator.processEvent(unsigned) { error("must not process") })
+        assertFalse(deduplicator.contains(unsigned.id))
     }
 
     @Test
@@ -62,5 +87,16 @@ class NostrEventDeduplicatorTest {
             (threadCount * checksPerThread).toLong(),
             deduplicator.getStats().totalChecks
         )
+    }
+
+    private fun signedEvent(content: String): NostrEvent {
+        val privateKey = "0".repeat(63) + "1"
+        return NostrEvent(
+            pubkey = NostrCrypto.derivePublicKey(privateKey),
+            createdAt = 1,
+            kind = NostrKind.TEXT_NOTE,
+            tags = emptyList(),
+            content = content
+        ).sign(privateKey)
     }
 }

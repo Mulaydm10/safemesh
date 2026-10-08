@@ -52,6 +52,8 @@ class NotificationManager(
         private const val SUMMARY_NOTIFICATION_ID = 999
       private const val GEOHASH_SUMMARY_NOTIFICATION_ID = 998
         private const val MAX_MESSAGES_IN_NOTIFICATION = 25
+        private const val SOS_CHANNEL_ID = "safemesh_sos_alerts"
+        private const val SOS_UNVERIFIED_CHANNEL_ID = "safemesh_sos_unverified"
 
         // Intent extras for notification handling
         const val EXTRA_OPEN_PRIVATE_CHAT = "open_private_chat"
@@ -190,11 +192,11 @@ class NotificationManager(
             (!isAppInBackground && currentPrivateChatPeer != conversationID)
         
         if (!shouldNotify) {
-            Log.d(TAG, "Skipping notification - app in foreground and viewing chat with $senderNickname")
+            Log.d(TAG, "Skipping notification - app in foreground and viewing this chat")
             return
         }
 
-        Log.d(TAG, "Showing notification for message from $senderNickname (conversationID: $conversationID)")
+        Log.d(TAG, "Showing private message notification")
 
         val notification = PendingNotification(
             senderPeerID = conversationID,
@@ -223,7 +225,7 @@ class NotificationManager(
         val messageCount = notifications.size
 
         // Create intent to open the specific private chat
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = NotificationLaunchGuard.notificationIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_OPEN_PRIVATE_CHAT, true)
             putExtra(EXTRA_PEER_ID, senderPeerID)
@@ -351,7 +353,7 @@ class NotificationManager(
         val notificationId = senderPeerID.hashCode()
         notifySafely(notificationId, builder.build())
 
-        Log.d(TAG, "Displayed notification for $contentTitle with ID $notificationId")
+        Log.d(TAG, "Displayed notification with ID $notificationId")
     }
 
     private fun conversationShortcutID(conversationID: String): String =
@@ -376,7 +378,7 @@ class NotificationManager(
     }
 
     fun showVerificationNotification(title: String, body: String, peerID: String? = null) {
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = NotificationLaunchGuard.notificationIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (peerID != null) {
                 putExtra(EXTRA_OPEN_PRIVATE_CHAT, true)
@@ -553,7 +555,7 @@ class NotificationManager(
         val firstMessageCount = notifications.count { it.isFirstMessage }
 
         // Create intent to open the specific geohash chat
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = NotificationLaunchGuard.notificationIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_OPEN_GEOHASH_CHAT, true)
             putExtra(EXTRA_GEOHASH, geohash)
@@ -725,14 +727,35 @@ class NotificationManager(
     }
 
     /**
-     * Show a notification for a mesh mention (@username format)
+     * Show an SOS alert. Only trusted (QR-verified or favorite) senders get alarm-level
+     * alerts; anyone else is shown at normal priority and marked unverified, because
+     * nicknames and coordinates are self-asserted by the sender.
      */
-    fun showSosNotification(senderNickname: String, messageContent: String) {
-        val channelId = "safemesh_sos_alerts"
+    fun showSosNotification(
+        senderNickname: String,
+        messageContent: String,
+        senderPeerID: String?,
+        senderFingerprint: String?,
+        trusted: Boolean,
+        notificationId: Int
+    ) {
+        if (senderPeerID != null &&
+            conversationPreferences.isMuted(ContactDirectory.canonicalConversationId(senderPeerID))
+        ) {
+            Log.d(TAG, "Skipping SOS notification from muted conversation")
+            return
+        }
+        val channelId = if (trusted) SOS_CHANNEL_ID else SOS_UNVERIFIED_CHANNEL_ID
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val channel = android.app.NotificationChannel(
-                channelId, "SOS alerts", android.app.NotificationManager.IMPORTANCE_HIGH
-            ).apply { description = "Emergency alerts from people nearby" }
+            val channel = if (trusted) {
+                android.app.NotificationChannel(
+                    channelId, "SOS alerts", android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply { description = "Emergency alerts from verified or favorite contacts" }
+            } else {
+                android.app.NotificationChannel(
+                    channelId, "Unverified SOS alerts", android.app.NotificationManager.IMPORTANCE_DEFAULT
+                ).apply { description = "Emergency alerts from people nearby you have not verified" }
+            }
             systemNotificationManager.createNotificationChannel(channel)
         }
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -742,23 +765,39 @@ class NotificationManager(
             context, NOTIFICATION_REQUEST_CODE + channelId.hashCode(), intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val notification = NotificationCompat.Builder(context, channelId)
+        val shortFingerprint = senderFingerprint?.take(8)?.lowercase()
+        val identity = shortFingerprint?.let { "$senderNickname ($it)" } ?: senderNickname
+        val title = if (trusted) "SOS from $identity" else "Unverified SOS from $identity"
+        val body = if (trusted) {
+            messageContent
+        } else {
+            "Sender and location are not verified.\n$messageContent"
+        }
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("SOS from $senderNickname")
-            .setContentText(messageContent)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(messageContent))
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
+            .setOnlyAlertOnce(!trusted)
             .setContentIntent(pendingIntent)
-            .build()
+        if (trusted) {
+            builder.setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+        } else {
+            builder.setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+        }
         try {
-            NotificationManagerCompat.from(context).notify(channelId.hashCode() + (System.currentTimeMillis() % 1000).toInt(), notification)
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
         } catch (e: SecurityException) {
             Log.w(TAG, "SOS notification not permitted: ${e.message}")
         }
     }
 
+    /**
+     * Show a notification for a mesh mention (@username format)
+     */
     fun showMeshMentionNotification(
         senderNickname: String,
         messageContent: String,
@@ -774,7 +813,7 @@ class NotificationManager(
             return
         }
 
-        Log.d(TAG, "Showing mesh mention notification from $senderNickname")
+        Log.d(TAG, "Showing mesh mention notification")
 
         // Use a special key for mesh mentions to group them together
         val meshMentionKey = "mesh_mentions"
@@ -870,7 +909,7 @@ class NotificationManager(
         val notificationId = 4000 // Different from DM and geohash IDs
         notifySafely(notificationId, builder.build())
 
-        Log.d(TAG, "Displayed mesh mention notification: $contentTitle")
+        Log.d(TAG, "Displayed mesh mention notification")
     }
 
     /**

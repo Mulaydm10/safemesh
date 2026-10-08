@@ -1,41 +1,28 @@
 package com.bitchat.android.nostr
 
 import android.app.Application
-import android.content.SharedPreferences
 import android.util.Log
 import java.io.BufferedReader
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.InputStreamReader
-import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 import kotlin.math.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
 
 /**
- * Loads relay coordinates from assets and provides nearest-relay lookup by geohash.
+ * Loads relay coordinates from the bundled asset and provides nearest-relay lookup by geohash.
+ *
+ * The list is never fetched at runtime: SafeMesh is offline-only, and a remote list could steer
+ * geohash traffic to arbitrary relays. Only `wss://` relays with valid hostnames are accepted.
  */
 object RelayDirectory {
 
     private const val TAG = "RelayDirectory"
-    private const val ASSET_FILE_URL = "https://raw.githubusercontent.com/permissionlesstech/georelays/refs/heads/main/nostr_relays.csv"
     private const val ASSET_FILE = "nostr_relays.csv"
-    private const val DOWNLOADED_FILE = "nostr_relays_latest.csv"
-    private const val PREFS_NAME = "relay_directory_prefs"
-    private const val KEY_LAST_UPDATE_MS = "last_update_ms"
-    private val ONE_DAY_MS = TimeUnit.DAYS.toMillis(1)
+    private const val LEGACY_DOWNLOADED_FILE = "nostr_relays_latest.csv"
+    private const val LEGACY_PREFS_NAME = "relay_directory_prefs"
+    internal const val MAX_ENTRIES = 5000
+    private const val MAX_LINE_LENGTH = 512
 
-    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val httpClient: OkHttpClient
-        get() = com.bitchat.android.net.OkHttpProvider.httpClient()
 
     data class RelayInfo(
         val url: String,
@@ -54,28 +41,9 @@ object RelayDirectory {
         synchronized(this) {
             if (initialized) return
             try {
-                val downloaded = getDownloadedFile(application)
-                val loadedFromDownloaded = if (downloaded.exists() && downloaded.canRead()) {
-                    loadFromFile(downloaded, sourceLabel = "downloaded")
-                } else {
-                    false
-                }
-
-                if (!loadedFromDownloaded) {
-                    loadFromAssets(application)
-                }
-
+                discardLegacyDownload(application)
+                loadFromAssets(application)
                 initialized = true
-
-                // Trigger an immediate fetch if the data is stale (older than 24h)
-                ioScope.launch {
-                    if (isStale(application)) {
-                        fetchAndMaybeSwap(application)
-                    }
-                }
-
-                // Start periodic staleness check every minute
-                startPeriodicRefresh(application)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize RelayDirectory: ${e.message}")
             }
@@ -89,8 +57,7 @@ object RelayDirectory {
         val snapshot = synchronized(relaysLock) { relays.toList() }
         if (snapshot.isEmpty()) return emptyList()
         val center = try {
-            val c = com.bitchat.android.geohash.Geohash.decodeToCenter(geohash)
-            c
+            com.bitchat.android.geohash.Geohash.decodeToCenter(geohash)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to decode geohash")
             return emptyList()
@@ -114,122 +81,42 @@ object RelayDirectory {
         return R * c
     }
 
-    private fun normalizeRelayUrl(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isEmpty()) return trimmed
-        return if ("://" in trimmed) trimmed else "wss://$trimmed"
+    /**
+     * Returns the wss:// URL for a relay CSV entry, or null unless it is a bare public
+     * hostname (optional port) or already wss://, with at most one trailing slash. Rejects plaintext schemes, IP literals
+     * and local names so a poisoned list cannot downgrade or redirect clients.
+     */
+    internal fun normalizeRelayUrl(raw: String): String? {
+        val trimmed = raw.trim().removeSuffix("/")
+        val authority = when {
+            trimmed.startsWith("wss://", ignoreCase = true) -> trimmed.substring("wss://".length)
+            "://" in trimmed -> return null
+            else -> trimmed
+        }
+        val match = RELAY_AUTHORITY.matchEntire(authority) ?: return null
+        val host = match.groupValues[1].lowercase()
+        val port = match.groupValues[2]
+        if (port.isNotEmpty() && port.toInt() !in 1..65535) return null
+        val labels = host.split('.')
+        if (labels.size < 2 || labels.last().all { it.isDigit() }) return null
+        if (host == "localhost" || BLOCKED_HOST_SUFFIXES.any { host.endsWith(it) }) return null
+        return if (port.isEmpty()) "wss://$host" else "wss://$host:$port"
     }
+
+    private val RELAY_AUTHORITY =
+        Regex("^((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9-]{1,63})(?::([0-9]{1,5}))?$")
+    private val BLOCKED_HOST_SUFFIXES =
+        listOf(".local", ".localhost", ".internal", ".lan", ".home", ".corp", ".intranet", ".arpa")
 
     // ===== Implementation details =====
 
-    private fun getPrefs(application: Application): SharedPreferences =
-        application.getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
-
-    private fun getDownloadedFile(application: Application): File =
-        File(application.filesDir, DOWNLOADED_FILE)
-
-    private fun isStale(application: Application): Boolean {
-        val last = getPrefs(application).getLong(KEY_LAST_UPDATE_MS, 0L)
-        val now = System.currentTimeMillis()
-        return now - last >= ONE_DAY_MS
-    }
-
-    private fun startPeriodicRefresh(application: Application) {
-        ioScope.launch {
-            while (true) {
-                try {
-                    if (isStale(application)) {
-                        fetchAndMaybeSwap(application)
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Periodic refresh encountered an error: ${e.message}")
-                }
-                delay(TimeUnit.MINUTES.toMillis(1))
-            }
-        }
-    }
-
-    private fun fetchAndMaybeSwap(application: Application) {
+    /** Earlier builds downloaded the list at runtime; drop any cached copy so it is never used. */
+    private fun discardLegacyDownload(application: Application) {
         try {
-            val tmpFile = File.createTempFile("relays_", ".csv", application.cacheDir)
-            val ok = downloadToFile(ASSET_FILE_URL, tmpFile)
-            if (!ok) {
-                Log.w(TAG, "Failed to fetch latest relays; keeping current list (will fallback to bundled if none)")
-                tmpFile.delete()
-                return
-            }
-
-            val parsed = parseCsv(FileInputStream(tmpFile))
-            if (parsed.isEmpty()) {
-                Log.w(TAG, "Downloaded relay CSV parsed to 0 entries; ignoring")
-                tmpFile.delete()
-                return
-            }
-
-            val dest = getDownloadedFile(application)
-            tmpFile.inputStream().use { input ->
-                FileOutputStream(dest, false).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            tmpFile.delete()
-
-            val hash = fileSha256Hex(dest)
-            val entries = parsed.size
-
-            synchronized(relaysLock) {
-                relays.clear()
-                relays.addAll(parsed)
-            }
-
-            getPrefs(application).edit().putLong(KEY_LAST_UPDATE_MS, System.currentTimeMillis()).apply()
-
-            Log.i(TAG, "✅ Using downloaded relay list (${dest.absolutePath}), entries=$entries, sha256=$hash, updatedAtMs=${getPrefs(application).getLong(KEY_LAST_UPDATE_MS, 0L)}")
+            File(application.filesDir, LEGACY_DOWNLOADED_FILE).delete()
+            application.deleteSharedPreferences(LEGACY_PREFS_NAME)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to fetch and swap relay list: ${e.message}")
-        }
-    }
-
-    private fun downloadToFile(url: String, dest: File): Boolean {
-        return try {
-            val req = Request.Builder().url(url).get().build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.w(TAG, "HTTP ${'$'}{resp.code} when fetching $url")
-                    return false
-                }
-                val body = resp.body ?: return false
-                FileOutputStream(dest).use { out ->
-                    body.byteStream().use { input ->
-                        input.copyTo(out)
-                    }
-                }
-                true
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Download error: ${e.message}")
-            false
-        }
-    }
-
-    private fun loadFromFile(file: File, sourceLabel: String): Boolean {
-        return try {
-            val list = parseCsv(FileInputStream(file))
-            if (list.isEmpty()) {
-                Log.w(TAG, "${sourceLabel} relay CSV has 0 entries; ignoring")
-                false
-            } else {
-                synchronized(relaysLock) {
-                    relays.clear()
-                    relays.addAll(list)
-                }
-                val hash = fileSha256Hex(file)
-                Log.i(TAG, "📄 Loaded ${list.size} relay entries from ${sourceLabel} file (${file.absolutePath}), sha256=$hash")
-                true
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed loading ${sourceLabel} relay file: ${e.message}")
-            false
+            Log.w(TAG, "Failed to remove legacy relay download: ${e.message}")
         }
     }
 
@@ -244,59 +131,29 @@ object RelayDirectory {
             relays.clear()
             relays.addAll(list)
         }
-        // Compute asset hash for logging
-        val hash = try {
-            application.assets.open(ASSET_FILE).use { input ->
-                streamSha256Hex(input)
-            }
-        } catch (e: Exception) {
-            "error:${'$'}{e.message}"
-        }
-        Log.i(TAG, "📦 Loaded ${list.size} relay entries from assets/$ASSET_FILE, sha256=$hash")
+        Log.i(TAG, "Loaded ${list.size} relay entries from assets/$ASSET_FILE")
     }
 
-    private fun parseCsv(input: InputStream): List<RelayInfo> {
+    internal fun parseCsv(input: InputStream): List<RelayInfo> {
         val result = mutableListOf<RelayInfo>()
-        BufferedReader(InputStreamReader(input)).use { reader ->
-            var line: String?
-            while (true) {
-                line = reader.readLine()
-                if (line == null) break
-                val trimmed = line!!.trim()
+        val seen = HashSet<String>()
+        BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
+            while (result.size < MAX_ENTRIES) {
+                val line = reader.readLine() ?: break
+                if (line.length > MAX_LINE_LENGTH) continue
+                val trimmed = line.trim()
                 if (trimmed.isEmpty()) continue
                 if (trimmed.lowercase().startsWith("relay url")) continue
                 val parts = trimmed.split(",")
                 if (parts.size < 3) continue
-                val url = normalizeRelayUrl(parts[0].trim())
-                val lat = parts[1].trim().toDoubleOrNull()
-                val lon = parts[2].trim().toDoubleOrNull()
-                if (url.isEmpty() || lat == null || lon == null) continue
+                val url = normalizeRelayUrl(parts[0]) ?: continue
+                val lat = parts[1].trim().toDoubleOrNull() ?: continue
+                val lon = parts[2].trim().toDoubleOrNull() ?: continue
+                if (lat !in -90.0..90.0 || lon !in -180.0..180.0) continue
+                if (!seen.add(url)) continue
                 result.add(RelayInfo(url = url, latitude = lat, longitude = lon))
             }
         }
         return result
-    }
-
-    private fun fileSha256Hex(file: File): String = try {
-        FileInputStream(file).use { input ->
-            streamSha256Hex(input)
-        }
-    } catch (_: Exception) { "error" }
-
-    private fun streamSha256Hex(input: InputStream): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buf = ByteArray(8192)
-        var read: Int
-        while (true) {
-            read = input.read(buf)
-            if (read <= 0) break
-            digest.update(buf, 0, read)
-        }
-        val bytes = digest.digest()
-        return bytes.joinToString("") { b ->
-            val v = b.toInt() and 0xff
-            val s = Integer.toHexString(v)
-            if (s.length == 1) "0$s" else s
-        }
     }
 }

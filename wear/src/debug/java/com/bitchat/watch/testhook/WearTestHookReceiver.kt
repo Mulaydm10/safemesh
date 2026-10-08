@@ -24,12 +24,17 @@ class WearTestHookReceiver : BroadcastReceiver() {
         const val TAG = "TestHook"
         const val ACTION = "com.bitchat.watch.TEST_HOOK"
         private const val DEFAULT_OVERALL_TIMEOUT_MS = 180_000L
+        private val SAFE_ID = Regex("^[A-Za-z0-9_-]{1,64}$")
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION) return
         val cmd = intent.getStringExtra("cmd") ?: "ping"
         val id = intent.getStringExtra("id") ?: "cmd-${System.currentTimeMillis()}"
+        if (!SAFE_ID.matches(id)) {
+            Log.w(TAG, "Rejected command with invalid id")
+            return
+        }
         val overallTimeout = intent.getLongExtra("overall_timeout_ms", DEFAULT_OVERALL_TIMEOUT_MS)
 
         Log.i(TAG, "CMD id=$id cmd=$cmd")
@@ -54,7 +59,7 @@ class WearTestHookReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to write result file for $id: ${e.message}")
             }
-            Log.i(TAG, "RESULT id=$id $result")
+            Log.i(TAG, "RESULT id=$id cmd=$cmd status=${result.optString("status")}")
         }.start()
         pendingResult.finish()
     }

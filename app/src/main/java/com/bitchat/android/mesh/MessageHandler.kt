@@ -30,6 +30,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
         private const val TAG = "MessageHandler"
         private const val ANNOUNCE_CLOCK_SKEW_TOLERANCE_MS = 10 * 60 * 1000L
         private const val MAX_CONSECUTIVE_DECRYPT_FAILURES = 3
+        private const val NOISE_REFRESH_COOLDOWN_MS = 30_000L
     }
 
     // Delegate for callbacks
@@ -41,9 +42,11 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
     // Coroutines
     private val handlerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Consecutive decrypt failures per peer; only signature-verified packets reach this path,
-    // so repeated failures mean the established session is stale (peer re-handshaked elsewhere).
+    // Consecutive decrypt failures per peer. NOISE_ENCRYPTED packets are unsigned and their sender ID
+    // is attacker-controlled, so failures may only trigger a non-destructive replacement handshake:
+    // the established session stays usable until a new handshake authenticates the peer's static key.
     private val consecutiveDecryptFailures = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val lastNoiseRefreshAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * Handle Noise encrypted transport message - SIMPLIFIED iOS-compatible version
@@ -217,17 +220,18 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
         if (peerID == "unknown" || peerID == myPeerID) return
         if (delegate?.hasNoiseSession(peerID) != true) return
         val failures = (consecutiveDecryptFailures[peerID] ?: 0) + 1
-        if (failures >= MAX_CONSECUTIVE_DECRYPT_FAILURES) {
-            consecutiveDecryptFailures.remove(peerID)
-            Log.w(TAG, "Noise session with $peerID stale after $failures decrypt failures; resetting and re-handshaking")
-            try { delegate?.removeNoiseSession(peerID) } catch (e: Exception) {
-                Log.w(TAG, "Failed to reset Noise session for $peerID: ${e.message}")
-            }
-            try { delegate?.initiateNoiseHandshake(peerID) } catch (e: Exception) {
-                Log.w(TAG, "Failed to re-initiate handshake with $peerID: ${e.message}")
-            }
-        } else {
+        if (failures < MAX_CONSECUTIVE_DECRYPT_FAILURES) {
             consecutiveDecryptFailures[peerID] = failures
+            return
+        }
+        consecutiveDecryptFailures.remove(peerID)
+        val now = System.currentTimeMillis()
+        val last = lastNoiseRefreshAt[peerID]
+        if (last != null && now - last in 0 until NOISE_REFRESH_COOLDOWN_MS) return
+        lastNoiseRefreshAt[peerID] = now
+        Log.w(TAG, "Noise session with $peerID may be stale after $failures decrypt failures; starting replacement handshake")
+        try { delegate?.refreshNoiseSession(peerID) } catch (e: Exception) {
+            Log.w(TAG, "Failed to start replacement handshake with $peerID: ${e.message}")
         }
     }
     
@@ -355,7 +359,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 .updateFromAnnouncement(peerID, nickname, neighborsOrNull, packet.timestamp)
         } catch (_: Exception) { }
 
-        Log.d(TAG, "Verified announce from $peerID (${announcement.nickname})")
+        Log.d(TAG, "Verified announce")
         return AnnounceHandlingResult.Accepted(isFirstAnnounce)
     }
     
@@ -410,7 +414,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
         if (peerID == myPeerID) return
         val senderNickname = delegate?.getPeerNickname(peerID)
         if (senderNickname != null) {
-            Log.d(TAG, "Received message from $senderNickname")
+            Log.d(TAG, "Received message from known peer")
             delegate?.updatePeerNickname(peerID, senderNickname)
         }
         
@@ -542,7 +546,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     isPrivate = true,
                     recipientNickname = delegate?.getMyNickname()
                 )
-                Log.d(TAG, "📄 Saved incoming file to $savedPath")
+                Log.d(TAG, "📄 Saved incoming file")
                 if (!LiveVoiceManager.getInstance(appContext).absorbFinalizedVoiceNote(message)) {
                     delegate?.onMessageReceived(message)
                 }
@@ -725,7 +729,8 @@ interface MessageHandlerDelegate {
     // Noise protocol operations
     fun hasNoiseSession(peerID: String): Boolean
     fun initiateNoiseHandshake(peerID: String)
-    fun removeNoiseSession(peerID: String) {}
+    /** Start a replacement handshake that keeps the established session until the new one authenticates. */
+    fun refreshNoiseSession(peerID: String) {}
     fun processNoiseHandshakeMessage(payload: ByteArray, peerID: String): ByteArray?
     fun onAuthenticatedPeerStateReceived(
         peerID: String,

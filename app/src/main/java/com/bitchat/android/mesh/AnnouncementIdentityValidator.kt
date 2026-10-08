@@ -17,6 +17,7 @@ object AnnouncementIdentityValidator {
         verifyEd25519: (signature: ByteArray, data: ByteArray, publicKey: ByteArray) -> Boolean
     ): IdentityAnnouncement? {
         if (packet.type != MessageType.ANNOUNCE.value) return null
+        if (packet.payload.size > IdentityAnnouncement.MAX_ENCODED_SIZE) return null
         val now = nowMs.coerceAtLeast(0).toULong()
         val skew = if (packet.timestamp >= now) packet.timestamp - now else now - packet.timestamp
         if (skew > MAX_CLOCK_SKEW_MS.toULong()) return null
