@@ -1,0 +1,5 @@
+# Provenance of app/src/main/assets/nostr_relays.csv. Change it only through the
+# reviewed PR opened by .github/workflows/fetch-georelays.yml.
+repository=permissionlesstech/georelays
+commit=226dc37de5e6a308c658b32bf06c61df2535a3a8
+sha256=231773a7bcde10caad70929b4172f932f3e6bcbcf9d71f09c43c8d3108c8e072
