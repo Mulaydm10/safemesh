@@ -1,5 +1,6 @@
 package com.bitchat.android.hotspot
 
+import com.bitchat.android.util.AppIntegrity
 import android.content.Context
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
@@ -109,6 +110,8 @@ class ApkWebServer(
      */
     private fun generateLandingPageHtml(): String {
         val apkSizeMb = apkFile.length() / 1024 / 1024
+        val apkSha256 = runCatching { AppIntegrity.fileSha256(apkFile) }.getOrDefault("unavailable")
+        val officialCode = AppIntegrity.officialCertSha256?.let { AppIntegrity.shortCode(it) } ?: "not configured"
 
         return """
 <!DOCTYPE html>
@@ -269,6 +272,13 @@ class ApkWebServer(
                 <div class="info-label">Size</div>
                 <div class="info-value">${apkSizeMb} MB</div>
             </div>
+        </div>
+
+        <div class="instructions">
+            <h3>🔐 Verify</h3>
+            <p>Official signing code: <b>${officialCode}</b></p>
+            <p style="word-break:break-all">File SHA-256: <code>${apkSha256}</code></p>
+            <p>After installing, open SafeMesh → Share → Verify. It must say "official SafeMesh" with the same code.</p>
         </div>
 
         <a href="/safemesh.apk" class="download-button">

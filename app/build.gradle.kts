@@ -51,6 +51,18 @@ android {
         includeInBundle = false
     }
 
+    val releaseKeystore = providers.environmentVariable("SAFEMESH_KEYSTORE").orNull
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = providers.environmentVariable("SAFEMESH_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("SAFEMESH_KEY_ALIAS").orElse("safemesh").get()
+                keyPassword = storePassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             ndk {
@@ -59,6 +71,7 @@ android {
             }
         }
         release {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

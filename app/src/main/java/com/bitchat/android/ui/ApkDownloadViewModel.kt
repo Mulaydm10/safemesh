@@ -162,8 +162,13 @@ class ApkDownloadViewModel internal constructor(
         application = application,
         apkManager = UniversalApkManager(application),
         downloader = WorkManagerApkDownloader(application),
-        latestReleaseProvider = GitHubReleaseClient(application)
+        latestReleaseProvider = OfflineReleaseProvider
     )
+
+    private object OfflineReleaseProvider : LatestReleaseProvider {
+        override suspend fun latestRelease(): Result<GitHubReleaseClient.ReleaseSnapshot> =
+            Result.failure(UnsupportedOperationException("SafeMesh does not check for updates"))
+    }
 
     companion object {
         private const val TAG = "ApkDownloadVM"
