@@ -79,7 +79,32 @@ class BluetoothConnectionTrackerLinkObservationTest {
         assertTrue(tracker.addressPeerMap.containsValue(PEER_ID))
     }
 
+    @Test
+    fun `advertised peerID alone does not mark peer connected`() {
+        val spoofAddress = "AA:BB:CC:DD:EE:10"
+        val spoofDevice = mock<BluetoothDevice>()
+        whenever(spoofDevice.address).thenReturn(spoofAddress)
+
+        tracker.addDeviceConnection(
+            spoofAddress,
+            BluetoothConnectionTracker.DeviceConnection(
+                device = spoofDevice,
+                peerID = PEER_ID,
+                linkID = "link-spoof"
+            )
+        )
+        assertFalse(tracker.isPeerConnected(PEER_ID))
+
+        assertTrue(tracker.observePeerIfCurrent(spoofAddress, "link-spoof", OTHER_PEER_ID))
+        assertFalse(tracker.isPeerConnected(PEER_ID))
+        assertTrue(tracker.isPeerConnected(OTHER_PEER_ID))
+
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(spoofAddress, "link-spoof"))
+        assertFalse(tracker.isPeerConnected(OTHER_PEER_ID))
+    }
+
     private companion object {
         const val PEER_ID = "0011223344556677"
+        const val OTHER_PEER_ID = "8899aabbccddeeff"
     }
 }

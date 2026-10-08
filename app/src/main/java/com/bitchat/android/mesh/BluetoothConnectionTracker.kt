@@ -44,6 +44,7 @@ class BluetoothConnectionTracker(
         val rssi: Int = Int.MIN_VALUE,
         val isClient: Boolean = false,
         val connectedAt: Long = System.currentTimeMillis(),
+        /** Self-asserted advertisement hint; unverified, never use as identity. */
         val peerID: String? = null,
         /** Unique to this GATT connection, even when Android reuses the device address. */
         val linkID: String = UUID.randomUUID().toString()
@@ -190,11 +191,13 @@ class BluetoothConnectionTracker(
     fun isDeviceConnected(deviceAddress: String): Boolean = isConnected(deviceAddress)
 
     /**
-     * Check if a peer is already connected (by PeerID)
+     * Whether a current link has proven [peerID] with a validated, non-relayed ANNOUNCE.
+     *
+     * The advertised [DeviceConnection.peerID] is self-asserted and must not be trusted here:
+     * a spoofing advertiser could otherwise suppress connections to the genuine peer.
      */
-    fun isPeerConnected(peerID: String): Boolean {
-        // Only consider actual connected devices that have identified themselves
-        return connectedDevices.values.any { it.peerID == peerID }
+    fun isPeerConnected(peerID: String): Boolean = synchronized(connectionStateLock) {
+        connectedDevices.keys.any { addressPeerMap[it] == peerID }
     }
     
     /**
