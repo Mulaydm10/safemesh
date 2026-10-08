@@ -10,8 +10,6 @@ import com.bitchat.android.noise.AuthenticatedNoiseSession
 import com.bitchat.android.noise.NoiseDecryptionResult
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
-import java.util.*
-import kotlin.collections.mutableSetOf
 
 /**
  * Manages security aspects of the mesh network including duplicate detection,
@@ -27,13 +25,23 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         private const val MAX_PROCESSED_MESSAGES = com.bitchat.android.util.AppConstants.Security.MAX_PROCESSED_MESSAGES
         private const val MAX_PROCESSED_KEY_EXCHANGES = com.bitchat.android.util.AppConstants.Security.MAX_PROCESSED_KEY_EXCHANGES
         private const val KEY_EXCHANGE_DEDUP_TIMEOUT = com.bitchat.android.util.AppConstants.Security.KEY_EXCHANGE_DEDUP_TIMEOUT_MS
+
+        /** Types whose packets must carry a signature from the sender's announced signing key. */
+        private val SIGNED_TYPES = setOf(
+            MessageType.ANNOUNCE,
+            MessageType.MESSAGE,
+            MessageType.FILE_TRANSFER,
+            MessageType.VOICE_FRAME,
+            MessageType.LEAVE
+        )
     }
     
-    // Security tracking
-    private val processedMessages = Collections.synchronizedSet(mutableSetOf<String>())
-    private val processedKeyExchanges = Collections.synchronizedSet(mutableSetOf<String>())
-    private val messageTimestamps = Collections.synchronizedMap(mutableMapOf<String, Long>())
-    private val keyExchangeTimestamps = Collections.synchronizedMap(mutableMapOf<String, Long>())
+    // Duplicate detection. Each cache is bounded on insert, so a flood cannot grow it between
+    // sweeps. Unsigned packet types get their own cache so a flood of them cannot evict
+    // entries for authenticated packets.
+    private val processedMessages = BoundedDedupCache(MAX_PROCESSED_MESSAGES)
+    private val processedUnsignedMessages = BoundedDedupCache(MAX_PROCESSED_MESSAGES)
+    private val processedKeyExchanges = BoundedDedupCache(MAX_PROCESSED_KEY_EXCHANGES)
     
     // Delegate for callbacks
     var delegate: SecurityManagerDelegate? = null
@@ -76,8 +84,9 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
 
         // Duplicate detection
         val messageID = generateMessageID(packet, peerID)
+        val dedupCache = if (messageType in SIGNED_TYPES) processedMessages else processedUnsignedMessages
         
-        if (processedMessages.contains(messageID)) {
+        if (dedupCache.contains(messageID)) {
             // Check for ANNOUNCE exception: allow if it looks like a direct neighbor (max TTL)
             // This ensures we observe the same peer on a new direct transport connection,
             // while still dropping looped/relayed duplicates.
@@ -94,11 +103,10 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
             return false
         }
 
-        // Record only authenticated packets. Recording an attacker-controlled
+        // Record only packets that passed verification. Recording an attacker-controlled
         // invalid packet first would let it poison duplicate detection for a
         // later legitimate packet with the same timestamp and payload.
-        processedMessages.add(messageID)
-        messageTimestamps[messageID] = currentTime
+        dedupCache.record(messageID, currentTime)
 
         return true
     }
@@ -136,8 +144,7 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
             // flow and reports whether this exact frame completed authentication. Never infer that
             // from ambient session state: a rejected replacement may leave the old session active.
             val result = encryptionService.processHandshakeMessageWithResult(packet.payload, peerID)
-            processedKeyExchanges.add(exchangeKey)
-            keyExchangeTimestamps[exchangeKey] = System.currentTimeMillis()
+            processedKeyExchanges.record(exchangeKey, System.currentTimeMillis())
             
             if (result.response != null) {
                 // Send handshake response through delegate
@@ -253,13 +260,7 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
             // Public packets that mutate identity, presence, or user-visible state must prove the
             // signing key learned from a verified announcement. LEAVE is included so an attacker
             // cannot evict a claimed peer or amplify a forged departure through relay.
-            if (MessageType.fromValue(packet.type) !in setOf(
-                    MessageType.ANNOUNCE,
-                    MessageType.MESSAGE,
-                    MessageType.FILE_TRANSFER,
-                    MessageType.VOICE_FRAME,
-                    MessageType.LEAVE
-                )) {
+            if (MessageType.fromValue(packet.type) !in SIGNED_TYPES) {
                 return true
             }
 
@@ -355,17 +356,18 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
     fun getDebugInfo(): String {
         return buildString {
             appendLine("=== Security Manager Debug Info ===")
-            appendLine("Processed Messages: ${processedMessages.size}")
-            appendLine("Processed Key Exchanges: ${processedKeyExchanges.size}")
-            appendLine("Message Timestamps: ${messageTimestamps.size}")
+            appendLine("Processed Messages: ${processedMessages.size()}")
+            appendLine("Processed Unsigned Messages: ${processedUnsignedMessages.size()}")
+            val keyExchanges = processedKeyExchanges.keys()
+            appendLine("Processed Key Exchanges: ${keyExchanges.size}")
             
-            if (processedKeyExchanges.isNotEmpty()) {
+            if (keyExchanges.isNotEmpty()) {
                 appendLine("Key Exchange History:")
-                processedKeyExchanges.take(10).forEach { exchange ->
+                keyExchanges.take(10).forEach { exchange ->
                     appendLine("  - $exchange")
                 }
-                if (processedKeyExchanges.size > 10) {
-                    appendLine("  ... and ${processedKeyExchanges.size - 10} more")
+                if (keyExchanges.size > 10) {
+                    appendLine("  ... and ${keyExchanges.size - 10} more")
                 }
             }
         }
@@ -378,63 +380,26 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         managerScope.launch {
             while (isActive) {
                 delay(CLEANUP_INTERVAL)
-                cleanupOldData()
+                try {
+                    cleanupOldData()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Dedup cache cleanup failed: ${e.message}")
+                }
             }
         }
     }
     
     /**
-     * Clean up old processed messages and timestamps
+     * Clean up old processed messages and handshake dedup entries
      */
     internal fun cleanupOldData(nowMs: Long = System.currentTimeMillis()) {
         val cutoffTime = nowMs - MESSAGE_TIMEOUT
-
-        // Clean up old message timestamps and corresponding processed messages
-        val messagesToRemove = messageTimestamps.entries.filter { (_, timestamp) ->
-            timestamp < cutoffTime
-        }.map { it.key }
-
-        messagesToRemove.forEach { messageId ->
-            messageTimestamps.remove(messageId)
-            processedMessages.remove(messageId)
-        }
-
-        // Limit the size of processed messages set
-        if (processedMessages.size > MAX_PROCESSED_MESSAGES) {
-            val excess = processedMessages.size - MAX_PROCESSED_MESSAGES
-            val toRemove = processedMessages.take(excess)
-            processedMessages.removeAll(toRemove.toSet())
-            removeFromMessageTimestamps(toRemove)
-        }
+        processedMessages.removeOlderThan(cutoffTime)
+        processedUnsignedMessages.removeOlderThan(cutoffTime)
 
         // Expire handshake dedup entries by time so a delayed same-ephemeral delivery
         // (e.g. a re-handshake retry after a failed attempt) is not blocked forever.
-        val keyExchangeCutoff = nowMs - KEY_EXCHANGE_DEDUP_TIMEOUT
-        val keyExchangesToRemove = keyExchangeTimestamps.entries.filter { (_, timestamp) ->
-            timestamp < keyExchangeCutoff
-        }.map { it.key }
-
-        keyExchangesToRemove.forEach { exchangeKey ->
-            keyExchangeTimestamps.remove(exchangeKey)
-            processedKeyExchanges.remove(exchangeKey)
-        }
-
-        // Limit the size of processed key exchanges set
-        if (processedKeyExchanges.size > MAX_PROCESSED_KEY_EXCHANGES) {
-            val excess = processedKeyExchanges.size - MAX_PROCESSED_KEY_EXCHANGES
-            val toRemove = processedKeyExchanges.take(excess)
-            processedKeyExchanges.removeAll(toRemove.toSet())
-            toRemove.forEach { keyExchangeTimestamps.remove(it) }
-        }
-    }
-    
-    /**
-     * Helper to remove entries from messageTimestamps
-     */
-    private fun removeFromMessageTimestamps(messageIds: List<String>) {
-        messageIds.forEach { messageId ->
-            messageTimestamps.remove(messageId)
-        }
+        processedKeyExchanges.removeOlderThan(nowMs - KEY_EXCHANGE_DEDUP_TIMEOUT)
     }
     
     /**
@@ -442,9 +407,8 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
      */
     fun clearAllData() {
         processedMessages.clear()
+        processedUnsignedMessages.clear()
         processedKeyExchanges.clear()
-        messageTimestamps.clear()
-        keyExchangeTimestamps.clear()
     }
     
     /**
@@ -454,6 +418,41 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         managerScope.cancel()
         clearAllData()
     }
+}
+
+/**
+ * Thread-safe dedup cache of key -> last-seen time. Evicts the oldest entry on insert once
+ * [maxEntries] is reached; every access, including iteration, holds the instance lock.
+ */
+internal class BoundedDedupCache(private val maxEntries: Int) {
+    private val entries = object : LinkedHashMap<String, Long>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean =
+            size > maxEntries
+    }
+
+    @Synchronized
+    fun contains(key: String): Boolean = entries.containsKey(key)
+
+    /** Records [key] as most recently seen, moving it to the end of the eviction order. */
+    @Synchronized
+    fun record(key: String, timestampMs: Long) {
+        entries.remove(key)
+        entries[key] = timestampMs
+    }
+
+    @Synchronized
+    fun removeOlderThan(cutoffMs: Long) {
+        entries.values.removeAll { it < cutoffMs }
+    }
+
+    @Synchronized
+    fun size(): Int = entries.size
+
+    @Synchronized
+    fun keys(): List<String> = entries.keys.toList()
+
+    @Synchronized
+    fun clear() = entries.clear()
 }
 
 /**
