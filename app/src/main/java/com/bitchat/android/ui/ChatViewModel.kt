@@ -220,7 +220,8 @@ class ChatViewModel(
         getMeshService = { mesh },
         markMessageReadLocally = { messageID ->
             seenMessageStore.markReadLocally(messageID)
-        }
+        },
+        isPeerVerified = { peerID -> verificationHandler.isPeerVerified(peerID) }
     )
     
     // New Geohash architecture ViewModel (replaces God object service usage in UI path)
